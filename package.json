@@ -1,0 +1,24 @@
+{
+  "name": "obsidian-whatsapp-ai",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Single-business WhatsApp AI customer service, product/order management and configurable payment integrations",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "check": "node --check src/index.js && node --check src/database/db.js && node --check src/services/ai.service.js && node --check src/services/payment.service.js && node --check src/services/whatsapp.service.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "6.7.18",
+    "better-sqlite3": "^11.8.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.4"
+  }
+}
