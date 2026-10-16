@@ -145,7 +145,7 @@ async function handlePaymentCommand(waId, text) {
   if (method === 'dynamic') {
     try {
       const payment = await createDynamicPayment(order);
-      const paymentInfo = payment.payment_url || payment.checkout_url || payment.qr_image_url || payment.qr_string || '';
+      const paymentInfo = payment.payment_url || payment.redirect_url || payment.checkout_url || payment.qr_image_url || payment.qr_string || '';
       return sendText(
         waId,
         `💳 *Tagihan QRIS Dinamis*\nPesanan: ${order.order_code}\nTotal: ${formatPrice(order.total)}\n` +
@@ -245,8 +245,8 @@ async function handleMessage(message) {
     if (method.includes('dinamis')) {
       try {
         const payment = await createDynamicPayment({ order_code: rental.rental_code, total: rental.price, wa_id: rental.wa_id, expires_at: rental.payment_due_at });
-        const link = payment.payment_url || payment.checkout_url || payment.qr_image_url || payment.qr_string || '';
-        return sendText(waId, `💳 *Tagihan rental ${rental.rental_code}*\nTotal: ${formatPrice(rental.price)}\n${link ? `Link/QR pembayaran: ${link}\n` : ''}Pembayaran akan dikonfirmasi otomatis jika provider mengirim webhook valid.`);
+        const link = payment.payment_url || payment.redirect_url || payment.checkout_url || payment.qr_image_url || payment.qr_string || '';
+        return sendText(waId, `💳 *Tagihan rental ${rental.rental_code}*\nTotal: ${formatPrice(rental.price)}\n${link ? `Link/QR pembayaran: ${link}\n` : ''}Pembayaran dikonfirmasi otomatis setelah status diverifikasi langsung ke provider.`);
       } catch (error) { return sendText(waId, `Pembayaran dinamis belum tersedia: ${error.message}`); }
     }
     const freshSettings = getSettings();
