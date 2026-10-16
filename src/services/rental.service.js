@@ -43,7 +43,7 @@ function createAccount(input) {
   const username = String(input.login_username || '').trim();
   const password = String(input.login_password || '').trim();
   const photos = Array.isArray(input.photos) ? input.photos : String(input.photos_text || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean);
-  if (photos.length > 10 || photos.some(v => !/^https?:\/\//i.test(String(v)))) throw new Error('Foto harus berupa maksimal 10 URL gambar publik, satu URL per baris.');
+  if (photos.length > 10 || photos.some(v => !/^https?:\/\//i.test(String(v)))) throw new Error('Foto harus maksimal 10 URL gambar (unggah melalui panel atau masukkan URL publik).');
   if (!username || !password) throw new Error('Username dan password akun wajib diisi.');
   const result = db.prepare(`INSERT INTO rental_accounts (account_code, game_code, game_name, login_type, login_username, login_password, notes, photos_json, active)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -65,7 +65,7 @@ function updateAccount(id, input) {
   const password = String(input.login_password ?? account.login_password).trim();
   let photos = input.photos != null ? input.photos : (input.photos_text != null ? String(input.photos_text).split(/\r?\n/).map(v => v.trim()).filter(Boolean) : JSON.parse(account.photos_json || '[]'));
   if (!Array.isArray(photos)) photos = [];
-  if (photos.length > 10 || photos.some(v => !/^https?:\/\//i.test(String(v)))) throw new Error('Foto harus berupa maksimal 10 URL gambar publik, satu URL per baris.');
+  if (photos.length > 10 || photos.some(v => !/^https?:\/\//i.test(String(v)))) throw new Error('Foto harus maksimal 10 URL gambar (unggah melalui panel atau masukkan URL publik).');
   if (!codeValue.startsWith(`${gameCode}-`) && !codeValue.startsWith(`${gameCode} `)) throw new Error(`Kode akun harus diawali ${gameCode}-`);
   db.prepare(`UPDATE rental_accounts SET account_code=?, game_code=?, game_name=?, login_type=?, login_username=?, login_password=?, notes=?, photos_json=?, active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
     .run(codeValue, gameCode, String(input.game_name ?? account.game_name), loginType, username, password,
