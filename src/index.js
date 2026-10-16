@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const helmet = require('helmet');
 const { db, getSettings, setSettings, audit } = require('./database/db');
@@ -35,6 +36,8 @@ app.set('trust proxy', 1); // Railway terminates HTTPS in front of the app.
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: false, limit: '2mb' }));
+const uploadDirectory = path.resolve(process.env.STORAGE_DIR || './storage', 'uploads', 'rental');
+fs.mkdirSync(uploadDirectory, { recursive: true });
 
 function createToken(value, expiresAt) {
   const payload = Buffer.from(JSON.stringify({ value, expiresAt })).toString('base64url');
@@ -175,7 +178,7 @@ const ALLOWED_SETTINGS = new Set([
   'static_qris_instructions', 'payment_provider_name', 'payment_create_url', 'payment_status_url',
   'payment_api_key', 'payment_merchant_id', 'payment_mode', 'payment_dynamic_enabled',
   'payment_webhook_secret', 'payment_expiry_minutes', 'currency', 'human_handover_message',
-  'auto_reply_enabled', 'sticker_spam_enabled', 'rental_payment_hold_minutes', 'rental_issue_report_minutes',
+  'auto_reply_enabled', 'sticker_spam_enabled', 'rental_payment_hold_minutes', 'rental_issue_report_minutes', 'rental_night_start', 'rental_night_end', 'rental_intro_message', 'rental_booking_enabled', 'rental_booking_dp',
 ]);
 const SECRET_SETTINGS = new Set(['openrouter_api_key', 'payment_api_key', 'payment_webhook_secret']);
 
@@ -320,6 +323,22 @@ app.post('/api/rentals/blacklist', requireAuth, (req, res) => {
 app.delete('/api/rentals/blacklist/:waId', requireAuth, (req, res) => {
   try { rentalService.removeBlacklist(decodeURIComponent(req.params.waId), 'admin'); return res.json({ ok: true }); }
   catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
+app.post('/api/rentals/photos', requireAuth, (req, res) => {
+  try {
+    const { data, filename = 'rental-photo' } = req.body || {};
+    const match = String(data || '').match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+    if (!match) return res.status(400).json({ error: 'Format foto harus JPG, PNG, atau WebP.' });
+    const buffer = Buffer.from(match[2], 'base64');
+    if (!buffer.length || buffer.length > 5 * 1024 * 1024) return res.status(400).json({ error: 'Ukuran foto maksimal 5 MB.' });
+    const ext = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' }[match[1]];
+    const safeName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
+    fs.writeFileSync(path.join(uploadDirectory, safeName), buffer, { flag: 'wx' });
+    const base = String(process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+    audit('admin', 'rental.photo.uploaded', String(filename).slice(0,100));
+    return res.json({ ok: true, url: `${base}/uploads/rental/${safeName}` });
+  } catch (error) { return res.status(400).json({ error: `Upload foto gagal: ${error.message}` }); }
 });
 
 app.post('/api/rentals/accounts', requireAuth, (req, res) => {
@@ -484,6 +503,7 @@ app.post('/api/webhooks/payment', async (req, res) => {
   return res.json({ ok: true, status });
 });
 
+app.use('/uploads/rental', express.static(uploadDirectory, { index: false, maxAge: '7d', dotfiles: 'deny' }));
 app.use(express.static(publicDirectory, { index: false, maxAge: '1h' }));
 app.get('*', (req, res) => res.sendFile(path.join(publicDirectory, 'index.html')));
 
