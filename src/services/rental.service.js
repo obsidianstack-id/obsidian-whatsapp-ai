@@ -102,7 +102,7 @@ function createRental({ accountCode, waId, customerName='', durationMinutes }) {
   const status = occupied ? 'queued' : 'waiting_payment';
   const transaction = db.transaction(() => {
     const result = db.prepare(`INSERT INTO rental_sessions (rental_code, account_id, wa_id, customer_name, duration_minutes, price, status, payment_due_at, queue_position)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`).run(rentalCode, account.id, waId, customerName, duration, priceRow.price, status, due);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`).run(rentalCode, account.id, waId, customerName, duration, finalPrice, status, due);
     if (!occupied) db.prepare(`UPDATE rental_accounts SET status='reserved', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(account.id);
     updateQueuePositions(account.id);
     return db.prepare('SELECT * FROM rental_sessions WHERE id=?').get(result.lastInsertRowid);
