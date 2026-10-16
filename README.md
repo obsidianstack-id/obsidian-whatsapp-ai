@@ -9,13 +9,13 @@ Single-business WhatsApp AI customer service with admin dashboard, product/inven
 - Admin manual payment verification is provided, but use it only after independently verifying funds.
 - Baileys is an unofficial WhatsApp Web integration. It can break when WhatsApp changes its protocol. Consider official WhatsApp Business Platform for production use; verify its features and limitations for your use case.
 - For phone-originated outgoing messages, sync behavior depends on events emitted by the linked WhatsApp session. Test it before relying on the dashboard as a complete shared inbox.
-- Store `auth/` and `data/` on persistent storage in production. Do not commit `.env`, auth credentials, or the SQLite database.
+- Store `storage/` on persistent storage in production. By default, SQLite is stored in `storage/data/` and the WhatsApp session in `storage/auth/`. Do not commit `.env`, auth credentials, or the SQLite database.
 
 ## Requirements
 
 - Node.js 20+
 - npm
-- A host that supports persistent storage for `auth/` and `data/` (for example, a Railway volume)
+- A host that supports a persistent volume mounted at `storage/` (for example, a Railway volume)
 
 ## Local setup
 
@@ -32,7 +32,7 @@ Single-business WhatsApp AI customer service with admin dashboard, product/inven
 
 1. Create a new Node.js service and upload these files or deploy the project using your chosen workflow; no GitHub integration is required by the app itself.
 2. Set variables: `ADMIN_PASSWORD`, `SESSION_SECRET`, `PORT` (Railway normally injects this; do not hard-code a conflicting value), `PUBLIC_BASE_URL`, and optionally `PAYMENT_WEBHOOK_SECRET`.
-3. Attach persistent storage at a path such as `/app/data` and `/app/auth`; set `DATA_DIR=/app/data` and `AUTH_DIR=/app/auth`.
+3. Attach one persistent volume at `/app/storage` and set `STORAGE_DIR=/app/storage`. By default, the app stores the SQLite database in `/app/storage/data/` and WhatsApp session files in `/app/storage/auth/`. Remove old `DATA_DIR` and `AUTH_DIR` variables if you want the unified storage layout; explicit legacy overrides take precedence.
 4. Expose the HTTP service on its listening port so you can access the dashboard and QR page.
 5. Keep HTTPS enabled. Never share QR codes or auth files.
 
@@ -59,8 +59,9 @@ src/
 public/
 ├── index.html                     # Admin Panel shell and styles
 └── app.js                         # Admin Panel browser logic
-auth/                              # WhatsApp session (persistent volume)
-data/                              # SQLite database (persistent volume)
+storage/
+├── auth/                          # WhatsApp session (persistent volume)
+└── data/                          # SQLite database (persistent volume)
 ```
 
 ## Validation
