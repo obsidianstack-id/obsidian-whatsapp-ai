@@ -8,6 +8,7 @@ function code(prefix) {
   return `${prefix}-${stamp}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 }
 function normalizeWaId(value) { const raw = String(value || '').trim(); if (raw.includes('@')) return raw; const digits = raw.replace(/\D/g, ''); return digits ? `${digits}@s.whatsapp.net` : ''; }
+function displayPhone(value) { const digits = String(value || '').split('@')[0].replace(/\D/g, ''); return digits ? `+${digits}` : 'nomor tidak tersedia'; }
 function shortUniqueCode() {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   for (let attempt = 0; attempt < 30; attempt++) {
@@ -43,12 +44,13 @@ function createAccount(input) {
   const username = String(input.login_username || '').trim();
   const password = String(input.login_password || '').trim();
   const photos = Array.isArray(input.photos) ? input.photos : String(input.photos_text || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+  const rentalMode = String(input.rental_mode || 'hourly').toLowerCase() === 'night' ? 'night' : 'hourly';
   if (photos.length > 10 || photos.some(v => !/^https?:\/\//i.test(String(v)))) throw new Error('Foto harus maksimal 10 URL gambar (unggah melalui panel atau masukkan URL publik).');
   if (!username || !password) throw new Error('Username dan password akun wajib diisi.');
-  const result = db.prepare(`INSERT INTO rental_accounts (account_code, game_code, game_name, login_type, login_username, login_password, notes, photos_json, active)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  const result = db.prepare(`INSERT INTO rental_accounts (account_code, game_code, game_name, login_type, login_username, login_password, notes, photos_json, rental_mode, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(accountCode, gameCode, String(input.game_name || gameCode).trim(), loginType, username, password,
-      String(input.notes || '').slice(0,1000), JSON.stringify(photos), input.active === false ? 0 : 1);
+      String(input.notes || '').slice(0,1000), JSON.stringify(photos), rentalMode, input.active === false ? 0 : 1);
   audit('admin', 'rental.account.created', accountCode);
   return getAccount(result.lastInsertRowid);
 }
@@ -65,11 +67,12 @@ function updateAccount(id, input) {
   const password = String(input.login_password ?? account.login_password).trim();
   let photos = input.photos != null ? input.photos : (input.photos_text != null ? String(input.photos_text).split(/\r?\n/).map(v => v.trim()).filter(Boolean) : JSON.parse(account.photos_json || '[]'));
   if (!Array.isArray(photos)) photos = [];
+  const rentalMode = String(input.rental_mode ?? account.rental_mode ?? 'hourly').toLowerCase() === 'night' ? 'night' : 'hourly';
   if (photos.length > 10 || photos.some(v => !/^https?:\/\//i.test(String(v)))) throw new Error('Foto harus maksimal 10 URL gambar (unggah melalui panel atau masukkan URL publik).');
   if (!codeValue.startsWith(`${gameCode}-`) && !codeValue.startsWith(`${gameCode} `)) throw new Error(`Kode akun harus diawali ${gameCode}-`);
-  db.prepare(`UPDATE rental_accounts SET account_code=?, game_code=?, game_name=?, login_type=?, login_username=?, login_password=?, notes=?, photos_json=?, active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+  db.prepare(`UPDATE rental_accounts SET account_code=?, game_code=?, game_name=?, login_type=?, login_username=?, login_password=?, notes=?, photos_json=?, rental_mode=?, active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
     .run(codeValue, gameCode, String(input.game_name ?? account.game_name), loginType, username, password,
-      String(input.notes ?? account.notes).slice(0,1000), JSON.stringify(photos), input.active === false ? 0 : 1, id);
+      String(input.notes ?? account.notes).slice(0,1000), JSON.stringify(photos), rentalMode, input.active === false ? 0 : 1, id);
   audit('admin', 'rental.account.updated', codeValue);
   return getAccount(id);
 }
@@ -93,6 +96,98 @@ function updateQueuePositions(accountId) {
   const stmt = db.prepare('UPDATE rental_sessions SET queue_position=? WHERE id=?');
   queued.forEach((r, i) => stmt.run(i + 1, r.id));
 }
+
+function createNightBooking({ accountCode, waId, customerName='' }) {
+  const normalized = normalizeWaId(waId);
+  const blocked = db.prepare('SELECT reason FROM rental_blacklist WHERE wa_id=?').get(normalized);
+  if (blocked) throw new Error('Nomor WhatsApp ini tidak dapat menyewa. Hubungi CS jika merasa ini kesalahan.');
+  const verification = db.prepare('SELECT location_received, video_received FROM rental_verifications WHERE wa_id=?').get(normalized);
+  if (!verification || !verification.location_received || !verification.video_received) throw new Error('Sebelum booking, kirim share lokasi WhatsApp dan video wajah menyebut “Rental dulu, Bos”, lalu ulangi perintah.');
+  const account = db.prepare("SELECT * FROM rental_accounts WHERE account_code=? AND active=1 AND rental_mode='night'").get(String(accountCode).toUpperCase());
+  if (!account) throw new Error('Akun paket malam tidak ditemukan atau tidak aktif. Ketik LIST untuk melihat stok.');
+  const existing = db.prepare("SELECT booking_code FROM rental_night_bookings WHERE wa_id=? AND status IN ('awaiting_dp','reserved','awaiting_balance','active')").get(normalized);
+  const accountHold = db.prepare("SELECT booking_code FROM rental_night_bookings WHERE account_id=? AND status IN ('awaiting_dp','reserved','awaiting_balance','active')").get(account.id);
+  if (accountHold) throw new Error('Akun ini sudah memiliki booking yang sedang diproses. Pilih akun lain atau tunggu statusnya selesai.');
+  if (existing) throw new Error(`Kamu sudah memiliki booking paket malam ${existing.booking_code} yang belum selesai.`);
+  if (account.status !== 'available') {
+    const alternatives = db.prepare("SELECT account_code, game_name, notes FROM rental_accounts WHERE game_code=? AND rental_mode='night' AND active=1 AND status='available' AND id<>? ORDER BY id LIMIT 3").all(account.game_code, account.id);
+    throw new Error(`Akun ${account.account_code} sedang tidak tersedia.${alternatives.length ? ` Alternatif tersedia: ${alternatives.map(a=>a.account_code+(a.notes?` (${a.notes})`:'' )).join(', ')}. Pesan salah satu dengan format KODE MALAM.` : ' Belum ada akun alternatif dengan game yang sama.'}`);
+  }
+  const price = Math.round(Number(db.prepare("SELECT value FROM settings WHERE key='rental_night_price'").get()?.value || 30000));
+  const dp = Math.round(Number(getSettings().rental_booking_dp || 10000));
+  if (!Number.isSafeInteger(price) || price < 1 || !Number.isSafeInteger(dp) || dp < 1 || dp >= price) throw new Error('Harga paket malam/DP belum valid. Admin harus mengatur DP lebih kecil dari harga paket.');
+  const bookingCode = code('NGT'); const dpOrderCode = `${bookingCode}-DP`;
+  const hold = mins(getSettings().rental_payment_hold_minutes, HOLD_DEFAULT);
+  const due = new Date(Date.now()+hold*60000).toISOString();
+  const result = db.prepare(`INSERT INTO rental_night_bookings (booking_code,dp_order_code,account_id,wa_id,customer_name,total_price,dp_amount,balance_amount,due_at) VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(bookingCode,dpOrderCode,account.id,normalized,customerName,price,dp,price-dp,due);
+  audit(normalized,'rental.night.booking.created',`${bookingCode} account=${account.account_code} dp=${dp}`);
+  return { ...db.prepare('SELECT * FROM rental_night_bookings WHERE id=?').get(result.lastInsertRowid), account_code:account.account_code, game_name:account.game_name, game_code:account.game_code };
+}
+function getNightBookingByOrder(orderCode) { return db.prepare(`SELECT n.*, a.account_code,a.game_name,a.game_code,a.login_type,a.login_username,a.login_password FROM rental_night_bookings n JOIN rental_accounts a ON a.id=n.account_id WHERE n.dp_order_code=? OR n.balance_order_code=?`).get(orderCode,orderCode); }
+function getNightBooking(waId, accountCode) { return db.prepare(`SELECT n.*,a.account_code,a.game_name FROM rental_night_bookings n JOIN rental_accounts a ON a.id=n.account_id WHERE n.wa_id=? AND a.account_code=? AND n.status IN ('awaiting_dp','reserved','awaiting_balance','active') ORDER BY n.id DESC LIMIT 1`).get(normalizeWaId(waId),String(accountCode).toUpperCase()); }
+function nightStartDate(now = new Date()) {
+  const settings=getSettings(); const [h,m]=String(settings.rental_night_start||'21:00').split(':').map(Number);
+  const localNow=new Date(now.getTime()+7*3600000); const start=new Date(Date.UTC(localNow.getUTCFullYear(),localNow.getUTCMonth(),localNow.getUTCDate(),h||21,m||0)-7*3600000);
+  if(now.getTime()>=start.getTime()+1) start.setUTCDate(start.getUTCDate()+1);
+  return start;
+}
+function nightWindow(now = new Date()) {
+  const settings=getSettings(); const [sh,sm]=String(settings.rental_night_start||'21:00').split(':').map(Number); const [eh,em]=String(settings.rental_night_end||'06:00').split(':').map(Number);
+  const localNow=new Date(now.getTime()+7*3600000); const start=new Date(Date.UTC(localNow.getUTCFullYear(),localNow.getUTCMonth(),localNow.getUTCDate(),sh||21,sm||0)-7*3600000);
+  const end=new Date(Date.UTC(localNow.getUTCFullYear(),localNow.getUTCMonth(),localNow.getUTCDate(),eh||6,em||0)-7*3600000); if(end<=start) end.setUTCDate(end.getUTCDate()+1);
+  if(now<start) return {start,end}; if(now>=end) { start.setUTCDate(start.getUTCDate()+1); end.setUTCDate(end.getUTCDate()+1); } return {start,end};
+}
+function continueNightBooking(waId, accountCode) {
+  const booking=getNightBooking(waId,accountCode); if(!booking) throw new Error('Booking paket malam tidak ditemukan. Mulai dengan KODE-AKUN MALAM.');
+  if(booking.status==='awaiting_dp') throw new Error('DP belum terverifikasi. Selesaikan pembayaran DP terlebih dahulu.');
+  if(booking.status==='active') throw new Error('Paket malam ini sudah aktif.');
+  const window=nightWindow(); const now=new Date();
+  if(now<window.start || now>=window.end) throw new Error(`Paket malam belum dapat dilanjutkan. Jam mulai: ${getSettings().rental_night_start||'21:00'} WIB; jam selesai: ${getSettings().rental_night_end||'06:00'} WIB. Ulangi perintah ${accountCode} MALAM saat jadwal dimulai.`);
+  if(booking.status!=='reserved' && booking.status!=='awaiting_balance') throw new Error('Status booking tidak mengizinkan pelunasan. Hubungi CS.');
+  const orderCode=booking.balance_order_code || `${booking.booking_code}-BAL`;
+  db.prepare("UPDATE rental_night_bookings SET status='awaiting_balance', balance_order_code=?, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(orderCode,booking.id);
+  return { ...booking, balance_order_code:orderCode, total:booking.balance_amount, order_code:orderCode, price:booking.balance_amount, wa_id:booking.wa_id, expires_at:booking.due_at };
+}
+function markNightPaid(orderCode, reference='midtrans') {
+  const booking=getNightBookingByOrder(orderCode); if(!booking) throw new Error('Booking paket malam tidak ditemukan.');
+  if(orderCode===booking.dp_order_code) {
+    if(['reserved','awaiting_balance','active','completed'].includes(booking.status)) return {duplicate:true,booking};
+    if(booking.status!=='awaiting_dp') return {duplicate:true,booking};
+    const freshAccount=getAccount(booking.account_id); if (!freshAccount || freshAccount.status!=='available') throw new Error('DP terdeteksi tetapi akun baru saja dipesan pelanggan lain. Admin harus memeriksa transaksi ini sebelum akun dikirim.');
+    const window=nightWindow();
+    db.transaction(()=>{ db.prepare("UPDATE rental_night_bookings SET status='reserved',payment_status='dp_paid',dp_reference=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='awaiting_dp'").run(String(reference),booking.id); db.prepare("UPDATE rental_accounts SET status='reserved',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='available'").run(booking.account_id); })();
+    send(booking.wa_id,`✅ DP paket malam *${booking.account_code}* terverifikasi. Nominal DP: Rp${booking.dp_amount.toLocaleString('id-ID')}. Akun belum dikirim pada tahap DP. Jam mulai paket: ${getSettings().rental_night_start||'21:00'} WIB. Saat jam mulai, kirim ulang *${booking.account_code} MALAM* untuk membuat tagihan pelunasan Rp${booking.balance_amount.toLocaleString('id-ID')}.`);
+    adminNotify(`DP PAKET MALAM TERVERIFIKASI\nNomor: ${displayPhone(booking.wa_id)}\nAkun: ${booking.account_code}\nBooking: ${booking.booking_code}\nDP: Rp${booking.dp_amount.toLocaleString('id-ID')}\nMulai: ${window.start.toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}`);
+    return {booking,stage:'dp'};
+  }
+  if(orderCode===booking.balance_order_code) {
+    if(booking.status==='active' || booking.status==='completed') return {duplicate:true,booking};
+    if(booking.status!=='awaiting_balance') throw new Error('Pembayaran pelunasan tidak sedang ditunggu.');
+    const window=nightWindow(); const now=new Date(); const start=now<window.start?window.start:now; const end=window.end;
+    if(end<=start) throw new Error('Waktu paket malam telah berakhir; hubungi admin untuk penanganan booking.');
+    db.transaction(()=>{db.prepare("UPDATE rental_night_bookings SET status='active',payment_status='paid',balance_reference=?,started_at=?,ends_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='awaiting_balance'").run(String(reference),start.toISOString(),end.toISOString(),booking.id);db.prepare("UPDATE rental_accounts SET status='rented',updated_at=CURRENT_TIMESTAMP WHERE id=?").run(booking.account_id);})();
+    const active=getNightBookingByOrder(orderCode);
+    send(active.wa_id,`✅ *PELUNASAN PAKET MALAM TERVERIFIKASI*\nAkun: *${active.account_code}* (${active.game_name})\nLogin: ${active.login_type||'Email/ID'}\nUsername/ID: ${active.login_username}\nPassword: ${active.login_password}\nMulai: ${new Date(active.started_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})} WIB\nBerakhir: ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})} WIB\nSilakan logout tepat waktu dan kirim rekaman layar logout.`);
+    adminNotify(`PAKET MALAM DIMULAI\nNomor: ${displayPhone(active.wa_id)}\nAkun: ${active.account_code}\nBooking: ${active.booking_code}\nMulai: ${new Date(active.started_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nBerakhir: ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}`);
+    return {booking:active,stage:'balance'};
+  }
+  throw new Error('Kode transaksi tidak cocok dengan booking paket malam.');
+}
+function notifyNightStart() {
+  const now=new Date(); const window=nightWindow(now); const rows=db.prepare("SELECT n.*,a.account_code FROM rental_night_bookings n JOIN rental_accounts a ON a.id=n.account_id WHERE n.status='reserved' AND n.notified_start=0").all();
+  for(const b of rows){ if(now>=window.start && now<window.end){ db.prepare('UPDATE rental_night_bookings SET notified_start=1 WHERE id=? AND notified_start=0').run(b.id); send(b.wa_id,`🌙 Paket malam sudah dimulai. Untuk melanjutkan booking *${b.account_code}*, kirim ulang *${b.account_code} MALAM* untuk membuat tagihan pelunasan. Akun dikirim setelah pelunasan terverifikasi.`); } }
+}
+
+function expireNightActive(){
+ const rows=db.prepare("SELECT n.*,a.account_code FROM rental_night_bookings n JOIN rental_accounts a ON a.id=n.account_id WHERE n.status='active' AND n.ends_at<>'' AND n.ends_at<=?").all(new Date().toISOString());
+ for(const b of rows){ db.prepare("UPDATE rental_night_bookings SET status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='active'").run(b.id); db.prepare("UPDATE rental_accounts SET status='maintenance',active=0,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(b.account_id); send(b.wa_id,`⏰ Paket malam *${b.account_code}* telah berakhir. Silakan logout dan kirim rekaman layar logout. Akun masuk status maintenance sampai admin memeriksa bukti logout dan mengaktifkannya kembali.`); adminNotify(`PAKET MALAM SELESAI\nNomor: ${displayPhone(b.wa_id)}\nAkun: ${b.account_code}\nBooking: ${b.booking_code}\nSelesai: ${new Date(b.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nMenunggu rekaman logout dan pemeriksaan admin.`); audit('system','rental.night.completed',b.booking_code); }
+ const due=db.prepare("SELECT n.*,a.account_code FROM rental_night_bookings n JOIN rental_accounts a ON a.id=n.account_id WHERE n.status='active' AND n.reminder_5_sent=0 AND n.ends_at>? AND n.ends_at<=?").all(new Date().toISOString(),new Date(Date.now()+5*60000).toISOString());
+ for(const b of due){db.prepare('UPDATE rental_night_bookings SET reminder_5_sent=1 WHERE id=? AND reminder_5_sent=0').run(b.id);send(b.wa_id,`⏰ Bos, paket malam *${b.account_code}* tersisa 5 menit. Siapkan logout dan kirim rekaman layar setelah keluar dari akun.`);}
+}
+
+function expireNightBookings(){ const rows=db.prepare("SELECT * FROM rental_night_bookings WHERE status='awaiting_dp' AND due_at<>'' AND due_at<=?").all(new Date().toISOString()); for(const b of rows){ db.prepare("UPDATE rental_night_bookings SET status='cancelled',payment_status='dp_expired',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='awaiting_dp'").run(b.id); send(b.wa_id,'⌛ Batas pembayaran DP paket malam habis. Booking dibatalkan; silakan pesan ulang jika stok masih tersedia.'); } }
+
 function createRental({ accountCode, waId, customerName='', durationMinutes }) {
   const blocked = db.prepare('SELECT reason FROM rental_blacklist WHERE wa_id=?').get(normalizeWaId(waId));
   if (blocked) throw new Error('Nomor WhatsApp ini tidak dapat menyewa. Hubungi CS jika merasa ini kesalahan.');
@@ -105,6 +200,8 @@ function createRental({ accountCode, waId, customerName='', durationMinutes }) {
   if (duration < 1) throw new Error('Durasi sewa tidak valid.');
   const account = db.prepare(`SELECT * FROM rental_accounts WHERE account_code=? AND active=1`).get(String(accountCode).toUpperCase());
   if (!account) throw new Error('Kode akun tidak ditemukan atau sedang nonaktif.');
+  const rentalMode = String(account.rental_mode || 'hourly');
+  if (rentalMode === 'night') throw new Error('Akun ini khusus paket malam. Gunakan perintah KODE-AKUN MALAM. Booking DP/pelunasan otomatis belum aktif; hubungi CS sementara.');
   const priceRow = db.prepare('SELECT price, duration_minutes, custom_duration_enabled FROM rental_prices WHERE game_code=? AND duration_minutes=? AND active=1').get(account.game_code, duration);
   let finalPrice;
   if (priceRow) {
@@ -156,7 +253,7 @@ function markRentalPaid(codeValue, reference='manual-admin') {
   transaction();
   const active = getRentalByCode(codeValue);
   send(active.wa_id, `✅ Pembayaran rental *${active.rental_code}* terkonfirmasi.\n🎮 Akun: *${active.account_code}* (${active.game_name})\n🔑 Metode login: ${active.login_type || 'Email/ID'}\n👤 Username/ID: ${active.login_username}\n🔐 Password: ${active.login_password}\n⏱️ Durasi: ${active.duration_minutes} menit\n🕒 Waktu sewa mulai sekarang dan berakhir sekitar ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}.\n\nJika tidak bisa login, ketik persis: *AKUN TIDAK BISA DILOGINKAN* dalam 3 menit pertama. Jika tidak ada laporan dalam 3 menit, waktu sewa tetap dihitung dari saat pembayaran terkonfirmasi.`);
-  adminNotify(`WAKTU_MULAI: ${new Date(active.started_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nWAKTU_BERAKHIR: ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nNOMOR_BUYER: ${active.wa_id}\nKODE_AKUN: ${active.account_code}\nKODE_RENTAL: ${active.rental_code}`);
+  adminNotify(`WAKTU_MULAI: ${new Date(active.started_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nWAKTU_BERAKHIR: ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nNOMOR_BUYER: ${displayPhone(active.wa_id)}\nKODE_AKUN: ${active.account_code}\nKODE_RENTAL: ${active.rental_code}`);
   audit('system', 'rental.paid', `${codeValue} reference=${reference}`);
   return active;
 }
@@ -220,7 +317,7 @@ function expireActive() {
     db.prepare(`UPDATE rental_sessions SET status='completed', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(rental.id);
     db.prepare(`UPDATE rental_accounts SET status='maintenance', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(rental.account_id);
     send(rental.wa_id, `⏰ Waktu sewa *${rental.account_code}* telah habis, Bos. Silakan logout dari akun dan kirim rekaman layar sebagai bukti logout. Akun akan diperiksa admin sebelum dinyatakan siap disewakan kembali.`);
-    adminNotify(`WAKTU_SELESAI: ${new Date().toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nNOMOR_BUYER: ${rental.wa_id}\nKODE_AKUN: ${rental.account_code}\nKODE_RENTAL: ${rental.rental_code}\nPelanggan diminta logout dan mengirim rekaman layar.`);
+    adminNotify(`WAKTU_SELESAI: ${new Date().toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nNOMOR_BUYER: ${displayPhone(rental.wa_id)}\nKODE_AKUN: ${rental.account_code}\nKODE_RENTAL: ${rental.rental_code}\nPelanggan diminta logout dan mengirim rekaman layar.`);
     audit('system', 'rental.expired', rental.rental_code);
     promoteQueue(rental.account_id);
   }
@@ -256,6 +353,7 @@ function addBlacklist(waId, reason, accountCode='', actor='admin') {
 }
 function removeBlacklist(waId, actor='admin') { db.prepare('DELETE FROM rental_blacklist WHERE wa_id=?').run(normalizeWaId(waId)); audit(actor, 'rental.blacklist.removed', normalizeWaId(waId)); }
 function listBlacklist() { return db.prepare('SELECT * FROM rental_blacklist ORDER BY id DESC').all(); }
+function listNightBookings() { return db.prepare(`SELECT n.*,a.account_code,a.game_name FROM rental_night_bookings n JOIN rental_accounts a ON a.id=n.account_id ORDER BY n.id DESC LIMIT 300`).all(); }
 function listRentals() {
   return db.prepare(`SELECT r.*, a.account_code, a.game_code, a.game_name, a.status AS account_status
     FROM rental_sessions r JOIN rental_accounts a ON a.id=r.account_id ORDER BY r.id DESC LIMIT 300`).all();
@@ -290,6 +388,6 @@ function setMaintenance(id, enabled) {
 function getRentalById(id) { return db.prepare(`SELECT r.*, a.account_code, a.game_code, a.game_name, a.status AS account_status FROM rental_sessions r JOIN rental_accounts a ON a.id=r.account_id WHERE r.id=?`).get(id); }
 
 // Idempotent periodic maintenance. Timers run in-process; keep a single Railway replica for this SQLite-backed app.
-setInterval(() => { try { expirePending(); expireActive(); sendThreeMinuteReminders(); sendFiveMinuteReminders(); } catch (error) { console.error('Rental maintenance error:', error.message); } }, 15_000).unref();
+setInterval(() => { try { expirePending(); expireActive(); sendThreeMinuteReminders(); sendFiveMinuteReminders(); notifyNightStart(); expireNightBookings(); expireNightActive(); }  catch (error) { console.error('Rental maintenance error:', error.message); } }, 15_000).unref();
 
-module.exports = { createAccount, updateAccount, deleteAccount, listAccounts, createRental, markRentalPaid, expirePending, cancelPendingRental, reportIssue, resolveIssue, expireActive, listRentals, getRentalPrices, upsertPrice, setMaintenance, addBlacklist, removeBlacklist, listBlacklist, recordVerification };
+module.exports = { createAccount, updateAccount, deleteAccount, listAccounts, createRental, createNightBooking, continueNightBooking, markNightPaid, getNightBookingByOrder, listNightBookings, markRentalPaid, expirePending, cancelPendingRental, reportIssue, resolveIssue, expireActive, listRentals, getRentalPrices, upsertPrice, setMaintenance, addBlacklist, removeBlacklist, listBlacklist, recordVerification };
