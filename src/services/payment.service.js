@@ -6,14 +6,19 @@ function makeOrderCode() {
   const day = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('');
   return `ORD-${day}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 }
+function midtransServerKey(settings = getSettings()) { return String(process.env.MIDTRANS_SERVER_KEY || settings.payment_api_key || '').trim(); }
+function midtransIsProduction(settings = getSettings()) {
+  if (process.env.MIDTRANS_IS_PRODUCTION != null) return String(process.env.MIDTRANS_IS_PRODUCTION).toLowerCase() === 'true';
+  return String(settings.payment_mode || '').toLowerCase() === 'production';
+}
 function isMidtrans(settings = getSettings()) {
-  return /midtrans/i.test(String(settings.payment_provider_name || ''));
+  return /midtrans/i.test(String(settings.payment_provider_name || '')) || Boolean(midtransServerKey(settings));
 }
 function midtransBase(settings = getSettings()) {
-  return settings.payment_mode === 'production' ? 'https://app.midtrans.com' : 'https://app.sandbox.midtrans.com';
+  return midtransIsProduction(settings) ? 'https://app.midtrans.com' : 'https://app.sandbox.midtrans.com';
 }
 function midtransApiBase(settings = getSettings()) {
-  return settings.payment_mode === 'production' ? 'https://api.midtrans.com' : 'https://api.sandbox.midtrans.com';
+  return midtransIsProduction(settings) ? 'https://api.midtrans.com' : 'https://api.sandbox.midtrans.com';
 }
 function midtransAuth(serverKey) {
   return `Basic ${Buffer.from(`${serverKey}:`).toString('base64')}`;
@@ -58,7 +63,7 @@ function createOrder({ waId, customerName = '', items, paymentMethod = 'static' 
 }
 
 async function createMidtransPayment(order, settings = getSettings()) {
-  const serverKey = String(settings.payment_api_key || '').trim();
+  const serverKey = midtransServerKey(settings);
   if (!serverKey) throw new Error('Midtrans Server Key belum diisi pada Panel Admin → Pembayaran.');
   const orderCode = String(order.order_code || order.rental_code || '');
   const existingPayment = orderCode.startsWith('RNT-')
@@ -116,7 +121,7 @@ async function createDynamicPayment(order) {
   return { ...data, reference };
 }
 
-function verifyMidtransSignature(body, serverKey = getSettings().payment_api_key) {
+function verifyMidtransSignature(body, serverKey = midtransServerKey()) {
   if (!serverKey || !body?.signature_key || !body?.order_id || !body?.status_code || body?.gross_amount == null) return false;
   const expected = crypto.createHash('sha512').update(`${body.order_id}${body.status_code}${body.gross_amount}${serverKey}`).digest();
   let actual;
@@ -124,7 +129,7 @@ function verifyMidtransSignature(body, serverKey = getSettings().payment_api_key
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 async function getMidtransTransactionStatus(orderId, settings = getSettings()) {
-  const key = String(settings.payment_api_key || '').trim();
+  const key = midtransServerKey(settings);
   if (!key) throw new Error('Midtrans Server Key belum dikonfigurasi.');
   return midtransFetch(`${midtransApiBase(settings)}/v2/${encodeURIComponent(orderId)}/status`, key, { method: 'GET' });
 }
@@ -157,4 +162,4 @@ function markOrderPaid(orderCode, reference = '') {
   return transaction();
 }
 
-module.exports = { createOrder, createDynamicPayment, createMidtransPayment, isMidtrans, verifyMidtransSignature, getMidtransTransactionStatus, verifyWebhook, markOrderPaid };
+module.exports = { createOrder, createDynamicPayment, createMidtransPayment, isMidtrans, midtransServerKey, verifyMidtransSignature, getMidtransTransactionStatus, verifyWebhook, markOrderPaid };
