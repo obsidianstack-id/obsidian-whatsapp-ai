@@ -118,3 +118,10 @@ Alur penting:
 - Setelah tiga menit, bot mengirim pengingat bahwa waktu sewa terus dihitung jika tidak ada laporan masalah.
 
 **Penting:** QRIS statis tidak bisa mengonfirmasi pembayaran secara otomatis dari gambar atau pesan pelanggan; admin harus memverifikasi uang masuk. Otomatisasi pembayaran penuh memerlukan provider pembayaran nyata yang mendukung webhook, dan adapter API generik perlu disesuaikan serta diuji terhadap dokumentasi provider. Timer in-process ini membutuhkan satu replica Railway dan persistent volume di `DATA_DIR` serta `AUTH_DIR`; untuk reliabilitas produksi lebih tinggi, gunakan scheduler persisten/worker dan database terkelola.
+
+
+## v1.8 rental panel update
+- Added direct admin image uploads for rental account photos (JPG/PNG/WebP, max 5 MB each; up to 10 per account). Uploaded files are stored under `STORAGE_DIR/uploads/rental`; configure `STORAGE_DIR` on a Railway persistent volume and `PUBLIC_BASE_URL` for the public base URL.
+- Added editable rental intro message, night-package start/end time, and booking DP settings.
+- Rental `LIST` response now gives a step-by-step order and separate payment instruction using the short `BAYARBOS ACCOUNT CODE` format.
+- Note: night-package inventory is currently presented from the available inventory; per-account hourly/night classification, automated DP booking, and paid extension transaction flow are not yet implemented in this release. The DP setting is configuration only and does not itself take deposits.
