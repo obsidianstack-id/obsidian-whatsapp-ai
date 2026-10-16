@@ -1,6 +1,6 @@
 {
   "name": "obsidian-whatsapp-ai",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "private": true,
   "description": "Single-business WhatsApp AI customer service, product/order management and configurable payment integrations",
   "main": "src/index.js",
