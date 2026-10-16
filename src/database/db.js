@@ -2,7 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 
-const dataDirectory = path.resolve(process.env.DATA_DIR || './data');
+// Keep session and application data under one persistent root by default.
+// DATA_DIR remains supported for existing deployments that explicitly set it.
+const storageDirectory = path.resolve(process.env.STORAGE_DIR || './storage');
+const dataDirectory = path.resolve(process.env.DATA_DIR || path.join(storageDirectory, 'data'));
 fs.mkdirSync(dataDirectory, { recursive: true });
 
 const db = new Database(path.join(dataDirectory, 'obsidian.sqlite'));
@@ -84,6 +87,7 @@ db.exec(`
     account_code TEXT NOT NULL UNIQUE,
     game_code TEXT NOT NULL,
     game_name TEXT NOT NULL DEFAULT '',
+    login_type TEXT NOT NULL DEFAULT 'Email/ID',
     login_username TEXT NOT NULL,
     login_password TEXT NOT NULL,
     notes TEXT DEFAULT '',
@@ -99,6 +103,7 @@ db.exec(`
     duration_minutes INTEGER NOT NULL,
     price INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
+    custom_duration_enabled INTEGER NOT NULL DEFAULT 1,
     UNIQUE(game_code, duration_minutes)
   );
 
@@ -143,6 +148,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_wa_id_id ON messages(wa_id, id);
   CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(payment_status, order_status);
 `);
+
+// Backward-compatible schema migrations for existing persistent SQLite databases.
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((item) => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+ensureColumn('rental_accounts', 'login_type', "TEXT NOT NULL DEFAULT 'Email/ID'");
+ensureColumn('rental_prices', 'custom_duration_enabled', 'INTEGER NOT NULL DEFAULT 1');
 
 const defaults = {
   business_name: 'Obsidian Stack',
