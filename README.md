@@ -77,3 +77,26 @@ Run `npm run check` to validate JavaScript syntax before deployment. This is a s
 - `CS`: switch conversation to waiting-admin mode.
 
 The admin can take over a conversation from the dashboard and return it to AI mode.
+
+## Rental akun game (v1.2)
+
+Admin Panel memiliki menu **Rental Game** untuk menambahkan akun game, mengatur kode unik (misalnya `FF-1`, `ML-1`), kredensial login, tarif berdasarkan kode game dan durasi menit, batas pembayaran reservasi, serta jendela laporan gagal login.
+
+Perintah WhatsApp:
+
+- `RENTAL` — melihat akun tersedia dan tarif.
+- `SEWA FF-1 60` — meminta sewa akun selama 60 menit. Ganti kode dan durasi sesuai inventaris/tarif admin.
+- `BAYAR RENTAL RNT-... STATIS` — menampilkan instruksi QRIS statis jika admin sudah mengatur QRIS.
+- `BAYAR RENTAL RNT-... DINAMIS` — meminta tagihan melalui adapter pembayaran dinamis yang sudah dikonfigurasi.
+- `AKUN TIDAK BISA DILOGINKAN` — menjeda timer sewa aktif, menandai akun bermasalah, dan mengirim notifikasi ke nomor admin yang disimpan di Pengaturan bisnis.
+
+Alur penting:
+
+- Reservasi yang langsung mendapat akun mengunci akun selama batas pembayaran (default 20 menit). Jika tidak terbayar, reservasi kedaluwarsa dan antrean berikutnya dipromosikan.
+- Akun yang sudah dipesan/aktif tidak dapat diberikan ke penyewa lain.
+- Kredensial hanya dikirim setelah pembayaran ditandai terverifikasi oleh admin atau webhook provider dinamis yang valid.
+- Timer sewa dimulai ketika pembayaran terverifikasi. Jika pelanggan melaporkan masalah login, timer dijeda; saat admin memilih **Akun normal**, durasi perbaikan ditambahkan ke akhir masa sewa.
+- Setelah masa sewa berakhir, akun dilepas dan penyewa berikutnya di antrean diberi kesempatan.
+- Setelah tiga menit, bot mengirim pengingat bahwa waktu sewa terus dihitung jika tidak ada laporan masalah.
+
+**Penting:** QRIS statis tidak bisa mengonfirmasi pembayaran secara otomatis dari gambar atau pesan pelanggan; admin harus memverifikasi uang masuk. Otomatisasi pembayaran penuh memerlukan provider pembayaran nyata yang mendukung webhook, dan adapter API generik perlu disesuaikan serta diuji terhadap dokumentasi provider. Timer in-process ini membutuhkan satu replica Railway dan persistent volume di `DATA_DIR` serta `AUTH_DIR`; untuk reliabilitas produksi lebih tinggi, gunakan scheduler persisten/worker dan database terkelola.
