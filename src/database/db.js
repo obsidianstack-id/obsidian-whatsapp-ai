@@ -91,6 +91,7 @@ db.exec(`
     login_username TEXT NOT NULL,
     login_password TEXT NOT NULL,
     notes TEXT DEFAULT '',
+    photos_json TEXT DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'available',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -110,6 +111,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS rental_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     rental_code TEXT NOT NULL UNIQUE,
+    unique_code TEXT DEFAULT '',
+    reminder_5_sent INTEGER NOT NULL DEFAULT 0,
     account_id INTEGER NOT NULL,
     wa_id TEXT NOT NULL,
     customer_name TEXT DEFAULT '',
@@ -139,6 +142,24 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_rental_sessions_account_status ON rental_sessions(account_id, status);
   CREATE INDEX IF NOT EXISTS idx_rental_sessions_due ON rental_sessions(status, payment_due_at);
 
+  CREATE TABLE IF NOT EXISTS rental_verifications (
+    wa_id TEXT PRIMARY KEY,
+    location_received INTEGER NOT NULL DEFAULT 0,
+    video_received INTEGER NOT NULL DEFAULT 0,
+    location_latitude REAL,
+    location_longitude REAL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS rental_blacklist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wa_id TEXT NOT NULL UNIQUE,
+    reason TEXT NOT NULL,
+    account_code TEXT DEFAULT '',
+    created_by TEXT DEFAULT 'admin',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor TEXT NOT NULL,
@@ -160,6 +181,9 @@ ensureColumn('rental_accounts', 'login_type', "TEXT NOT NULL DEFAULT 'Email/ID'"
 ensureColumn('rental_prices', 'custom_duration_enabled', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('rental_sessions', 'payment_url', "TEXT DEFAULT ''");
 ensureColumn('rental_sessions', 'payment_token', "TEXT DEFAULT ''");
+ensureColumn('rental_sessions', 'unique_code', "TEXT DEFAULT ''");
+ensureColumn('rental_sessions', 'reminder_5_sent', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('rental_accounts', 'photos_json', "TEXT DEFAULT '[]'");
 
 const defaults = {
   business_name: 'Obsidian Stack',
