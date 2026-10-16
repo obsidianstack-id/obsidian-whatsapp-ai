@@ -136,6 +136,19 @@ function markRentalPaid(codeValue, reference='manual-admin') {
   audit('system', 'rental.paid', `${codeValue} reference=${reference}`);
   return active;
 }
+function cancelPendingRental(codeValue, paymentStatus = 'failed') {
+  const rental = db.prepare(`SELECT * FROM rental_sessions WHERE rental_code=? AND status='waiting_payment' AND payment_status='pending'`).get(codeValue);
+  if (!rental) return false;
+  const transaction = db.transaction(() => {
+    db.prepare(`UPDATE rental_sessions SET status='cancelled', payment_status=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='waiting_payment' AND payment_status='pending'`).run(paymentStatus, rental.id);
+    db.prepare(`UPDATE rental_accounts SET status='available', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='reserved'`).run(rental.account_id);
+  });
+  transaction();
+  send(rental.wa_id, `⌛ Pembayaran rental *${rental.rental_code}* berstatus ${paymentStatus}. Reservasi dibatalkan dan akun akan diteruskan ke antrean berikutnya jika ada.`);
+  audit('system', 'rental.payment_cancelled', `${rental.rental_code}:${paymentStatus}`);
+  promoteQueue(rental.account_id);
+  return true;
+}
 function expirePending() {
   const expired = db.prepare(`SELECT * FROM rental_sessions WHERE status='waiting_payment' AND payment_status='pending' AND payment_due_at <= ?`).all(new Date().toISOString());
   for (const rental of expired) {
@@ -230,4 +243,4 @@ function getRentalById(id) { return db.prepare(`SELECT r.*, a.account_code, a.ga
 // Idempotent periodic maintenance. Timers run in-process; keep a single Railway replica for this SQLite-backed app.
 setInterval(() => { try { expirePending(); expireActive(); sendThreeMinuteReminders(); } catch (error) { console.error('Rental maintenance error:', error.message); } }, 15_000).unref();
 
-module.exports = { createAccount, updateAccount, deleteAccount, listAccounts, createRental, markRentalPaid, expirePending, reportIssue, resolveIssue, expireActive, listRentals, getRentalPrices, upsertPrice, setMaintenance };
+module.exports = { createAccount, updateAccount, deleteAccount, listAccounts, createRental, markRentalPaid, expirePending, cancelPendingRental, reportIssue, resolveIssue, expireActive, listRentals, getRentalPrices, upsertPrice, setMaintenance };
