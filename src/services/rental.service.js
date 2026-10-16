@@ -7,6 +7,17 @@ function code(prefix) {
   const stamp = `${date.getFullYear()}${String(date.getMonth()+1).padStart(2,'0')}${String(date.getDate()).padStart(2,'0')}`;
   return `${prefix}-${stamp}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 }
+function normalizeWaId(value) { const raw = String(value || '').trim(); if (raw.includes('@')) return raw; const digits = raw.replace(/\D/g, ''); return digits ? `${digits}@s.whatsapp.net` : ''; }
+function shortUniqueCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const bytes = crypto.randomBytes(2);
+    const value = alphabet[bytes[0] % alphabet.length] + alphabet[bytes[1] % alphabet.length];
+    const exists = db.prepare("SELECT 1 FROM rental_sessions WHERE unique_code=? AND status IN ('waiting_payment','queued','active','problem') LIMIT 1").get(value);
+    if (!exists) return value;
+  }
+  throw new Error('Kode unik sedang penuh. Coba lagi sebentar.');
+}
 function mins(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? Math.min(Math.round(n), 7 * 24 * 60) : fallback;
@@ -31,11 +42,13 @@ function createAccount(input) {
   const loginType = String(input.login_type || 'Email/ID').trim().slice(0,40);
   const username = String(input.login_username || '').trim();
   const password = String(input.login_password || '').trim();
+  const photos = Array.isArray(input.photos) ? input.photos : String(input.photos_text || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+  if (photos.length > 10 || photos.some(v => !/^https?:\/\//i.test(String(v)))) throw new Error('Foto harus berupa maksimal 10 URL gambar publik, satu URL per baris.');
   if (!username || !password) throw new Error('Username dan password akun wajib diisi.');
-  const result = db.prepare(`INSERT INTO rental_accounts (account_code, game_code, game_name, login_type, login_username, login_password, notes, active)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+  const result = db.prepare(`INSERT INTO rental_accounts (account_code, game_code, game_name, login_type, login_username, login_password, notes, photos_json, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(accountCode, gameCode, String(input.game_name || gameCode).trim(), loginType, username, password,
-      String(input.notes || '').slice(0,1000), input.active === false ? 0 : 1);
+      String(input.notes || '').slice(0,1000), JSON.stringify(photos), input.active === false ? 0 : 1);
   audit('admin', 'rental.account.created', accountCode);
   return getAccount(result.lastInsertRowid);
 }
@@ -50,10 +63,13 @@ function updateAccount(id, input) {
   const loginType = String(input.login_type ?? account.login_type ?? 'Email/ID').trim().slice(0,40);
   const username = String(input.login_username ?? account.login_username).trim();
   const password = String(input.login_password ?? account.login_password).trim();
+  let photos = input.photos != null ? input.photos : (input.photos_text != null ? String(input.photos_text).split(/\r?\n/).map(v => v.trim()).filter(Boolean) : JSON.parse(account.photos_json || '[]'));
+  if (!Array.isArray(photos)) photos = [];
+  if (photos.length > 10 || photos.some(v => !/^https?:\/\//i.test(String(v)))) throw new Error('Foto harus berupa maksimal 10 URL gambar publik, satu URL per baris.');
   if (!codeValue.startsWith(`${gameCode}-`) && !codeValue.startsWith(`${gameCode} `)) throw new Error(`Kode akun harus diawali ${gameCode}-`);
-  db.prepare(`UPDATE rental_accounts SET account_code=?, game_code=?, game_name=?, login_type=?, login_username=?, login_password=?, notes=?, active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+  db.prepare(`UPDATE rental_accounts SET account_code=?, game_code=?, game_name=?, login_type=?, login_username=?, login_password=?, notes=?, photos_json=?, active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
     .run(codeValue, gameCode, String(input.game_name ?? account.game_name), loginType, username, password,
-      String(input.notes ?? account.notes).slice(0,1000), input.active === false ? 0 : 1, id);
+      String(input.notes ?? account.notes).slice(0,1000), JSON.stringify(photos), input.active === false ? 0 : 1, id);
   audit('admin', 'rental.account.updated', codeValue);
   return getAccount(id);
 }
@@ -69,7 +85,7 @@ function promoteQueue(accountId) {
   const due = new Date(Date.now() + holdMinutes * 60000).toISOString();
   db.prepare(`UPDATE rental_sessions SET status='waiting_payment', payment_due_at=?, queue_position=0, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(due, next.id);
   db.prepare(`UPDATE rental_accounts SET status='reserved', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(accountId);
-  send(next.wa_id, `🎮 Akun *${account.account_code}* sekarang tersedia untuk kamu.\nPesanan: *${next.rental_code}*\nDurasi: ${next.duration_minutes} menit\nHarga: Rp${Number(next.price).toLocaleString('id-ID')}\nSelesaikan pembayaran dalam ${holdMinutes} menit. Ketik *BAYAR RENTAL ${next.rental_code}* lalu ikuti instruksi admin/pembayaran.`);
+  send(next.wa_id, `🎮 Akun *${account.account_code}* sekarang tersedia untuk kamu.\nDurasi: ${next.duration_minutes} menit\nHarga: Rp${Number(next.price).toLocaleString('id-ID')}\nKode unik: *${next.unique_code || 'cek reservasi'}*\nSelesaikan pembayaran dalam ${holdMinutes} menit. Ketik *BAYARBOS ${account.account_code} ${next.unique_code}* untuk meminta tagihan. Format lama: BAYAR RENTAL ${next.rental_code} DINAMIS.`);
   updateQueuePositions(accountId);
 }
 function updateQueuePositions(accountId) {
@@ -78,6 +94,13 @@ function updateQueuePositions(accountId) {
   queued.forEach((r, i) => stmt.run(i + 1, r.id));
 }
 function createRental({ accountCode, waId, customerName='', durationMinutes }) {
+  const blocked = db.prepare('SELECT reason FROM rental_blacklist WHERE wa_id=?').get(normalizeWaId(waId));
+  if (blocked) throw new Error('Nomor WhatsApp ini tidak dapat menyewa. Hubungi CS jika merasa ini kesalahan.');
+  const verification = db.prepare('SELECT location_received, video_received FROM rental_verifications WHERE wa_id=?').get(normalizeWaId(waId));
+  if (!verification || !verification.location_received || !verification.video_received) {
+    const missing = []; if (!verification || !verification.location_received) missing.push('share lokasi WhatsApp'); if (!verification || !verification.video_received) missing.push('video wajah menyebut “Rental dulu, Bos”');
+    throw new Error(`Sebelum order, kirim ${missing.join(' dan ')} ke bot. Setelah diterima, ulangi perintah SEWA.`);
+  }
   const duration = mins(durationMinutes, 60);
   if (duration < 1) throw new Error('Durasi sewa tidak valid.');
   const account = db.prepare(`SELECT * FROM rental_accounts WHERE account_code=? AND active=1`).get(String(accountCode).toUpperCase());
@@ -98,21 +121,22 @@ function createRental({ accountCode, waId, customerName='', durationMinutes }) {
   const occupied = account.status !== 'available';
   const holdMinutes = mins(getSettings().rental_payment_hold_minutes, HOLD_DEFAULT);
   const rentalCode = code('RNT');
+  const uniqueCode = shortUniqueCode();
   const due = new Date(Date.now() + holdMinutes * 60000).toISOString();
   const status = occupied ? 'queued' : 'waiting_payment';
   const transaction = db.transaction(() => {
-    const result = db.prepare(`INSERT INTO rental_sessions (rental_code, account_id, wa_id, customer_name, duration_minutes, price, status, payment_due_at, queue_position)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`).run(rentalCode, account.id, waId, customerName, duration, finalPrice, status, due);
+    const result = db.prepare(`INSERT INTO rental_sessions (rental_code, unique_code, account_id, wa_id, customer_name, duration_minutes, price, status, payment_due_at, queue_position)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`).run(rentalCode, uniqueCode, account.id, waId, customerName, duration, finalPrice, status, due);
     if (!occupied) db.prepare(`UPDATE rental_accounts SET status='reserved', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(account.id);
     updateQueuePositions(account.id);
     return db.prepare('SELECT * FROM rental_sessions WHERE id=?').get(result.lastInsertRowid);
   });
   const rental = transaction();
   audit(waId, 'rental.created', `${rentalCode} account=${account.account_code} status=${status}`);
-  return { ...rental, price: finalPrice, account_code: account.account_code, game_code: account.game_code, game_name: account.game_name, queued: occupied };
+  return { ...rental, unique_code: uniqueCode, price: finalPrice, account_code: account.account_code, game_code: account.game_code, game_name: account.game_name, queued: occupied };
 }
 function getRentalByCode(codeValue) {
-  return db.prepare(`SELECT r.*, a.account_code, a.game_code, a.game_name, a.login_username, a.login_password, a.status AS account_status
+  return db.prepare(`SELECT r.*, a.account_code, a.game_code, a.game_name, a.login_type, a.login_username, a.login_password, a.status AS account_status
     FROM rental_sessions r JOIN rental_accounts a ON a.id=r.account_id WHERE r.rental_code=?`).get(codeValue);
 }
 function markRentalPaid(codeValue, reference='manual-admin') {
@@ -132,7 +156,7 @@ function markRentalPaid(codeValue, reference='manual-admin') {
   transaction();
   const active = getRentalByCode(codeValue);
   send(active.wa_id, `✅ Pembayaran rental *${active.rental_code}* terkonfirmasi.\n🎮 Akun: *${active.account_code}* (${active.game_name})\n🔑 Metode login: ${active.login_type || 'Email/ID'}\n👤 Username/ID: ${active.login_username}\n🔐 Password: ${active.login_password}\n⏱️ Durasi: ${active.duration_minutes} menit\n🕒 Waktu sewa mulai sekarang dan berakhir sekitar ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}.\n\nJika tidak bisa login, ketik persis: *AKUN TIDAK BISA DILOGINKAN* dalam 3 menit pertama. Jika tidak ada laporan dalam 3 menit, waktu sewa tetap dihitung dari saat pembayaran terkonfirmasi.`);
-  adminNotify(`Pembayaran rental ${active.rental_code} terkonfirmasi. Akun ${active.account_code}, penyewa ${active.wa_id}, durasi ${active.duration_minutes} menit.`);
+  adminNotify(`WAKTU_MULAI: ${new Date(active.started_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nWAKTU_BERAKHIR: ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nNOMOR_BUYER: ${active.wa_id}\nKODE_AKUN: ${active.account_code}\nKODE_RENTAL: ${active.rental_code}`);
   audit('system', 'rental.paid', `${codeValue} reference=${reference}`);
   return active;
 }
@@ -168,7 +192,8 @@ function reportIssue(waId) {
   const now = new Date().toISOString();
   db.prepare(`UPDATE rental_sessions SET status='problem', paused_at=?, issue_reported_at=?, issue_note='Pelanggan melaporkan tidak bisa login', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(now, now, rental.id);
   db.prepare(`UPDATE rental_accounts SET status='problem', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(rental.account_id);
-  send(waId, `⚠️ Laporan akun bermasalah untuk *${rental.account_code}* diterima. Waktu sewa dijeda sejak laporan ini. Admin akan memeriksa akun. Waktu perbaikan tidak dihitung selama status perbaikan.`);
+  const adminNumber = String(getSettings().admin_whatsapp || '').replace(/\D/g, '');
+  send(waId, `⚠️ Laporan akun *${rental.account_code}* diterima. Waktu sewa dijeda dan admin diberi tahu. Hubungi owner/CS di sini: ${adminNumber ? `https://wa.me/${adminNumber}` : 'nomor CS belum diatur di panel admin'}. Waktu perbaikan tidak dihitung selama status perbaikan.`);
   adminNotify(`🚨 AKUN BERMASALAH\nAkun: ${rental.account_code}\nPenyewa: ${rental.customer_name || waId} (${waId})\nRental: ${rental.rental_code}\nWaktu laporan: ${now}\nBuka panel Rental → Bermasalah untuk memeriksa dan menandai akun normal.`);
   audit(waId, 'rental.issue_reported', rental.rental_code);
   return getRentalByCode(rental.rental_code);
@@ -193,8 +218,9 @@ function expireActive() {
   const expired = db.prepare(`SELECT r.*, a.account_code FROM rental_sessions r JOIN rental_accounts a ON a.id=r.account_id WHERE r.status='active' AND r.ends_at <= ?`).all(nowIso);
   for (const rental of expired) {
     db.prepare(`UPDATE rental_sessions SET status='completed', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(rental.id);
-    db.prepare(`UPDATE rental_accounts SET status='available', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(rental.account_id);
-    send(rental.wa_id, `⏰ Waktu sewa *${rental.account_code}* telah habis. Akun sekarang tersedia untuk penyewa berikutnya. Terima kasih sudah menyewa.`);
+    db.prepare(`UPDATE rental_accounts SET status='maintenance', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(rental.account_id);
+    send(rental.wa_id, `⏰ Waktu sewa *${rental.account_code}* telah habis, Bos. Silakan logout dari akun dan kirim rekaman layar sebagai bukti logout. Akun akan diperiksa admin sebelum dinyatakan siap disewakan kembali.`);
+    adminNotify(`WAKTU_SELESAI: ${new Date().toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nNOMOR_BUYER: ${rental.wa_id}\nKODE_AKUN: ${rental.account_code}\nKODE_RENTAL: ${rental.rental_code}\nPelanggan diminta logout dan mengirim rekaman layar.`);
     audit('system', 'rental.expired', rental.rental_code);
     promoteQueue(rental.account_id);
   }
@@ -207,6 +233,29 @@ function sendThreeMinuteReminders() {
     send(rental.wa_id, `⏱️ Pengingat: jika *${rental.account_code}* tidak bisa diloginkan, ketik *AKUN TIDAK BISA DILOGINKAN*. Karena belum ada laporan masalah dalam ${mins(getSettings().rental_issue_report_minutes,3)} menit pertama, waktu sewa tetap berjalan sejak pembayaran dikonfirmasi.`);
   }
 }
+function sendFiveMinuteReminders() {
+  const now = Date.now();
+  const due = db.prepare("SELECT r.*, a.account_code FROM rental_sessions r JOIN rental_accounts a ON a.id=r.account_id WHERE r.status='active' AND r.reminder_5_sent=0 AND r.ends_at <= ? AND r.ends_at > ?").all(new Date(now + 5*60000).toISOString(), new Date(now).toISOString());
+  for (const rental of due) {
+    db.prepare('UPDATE rental_sessions SET reminder_5_sent=1 WHERE id=? AND reminder_5_sent=0').run(rental.id);
+    send(rental.wa_id, `⏰ Bos, sewa *${rental.account_code}* tinggal 5 menit lagi. Mau perpanjang? Balas *PERPANJANG* atau hubungi CS untuk meminta perpanjangan. Tagihan harus diverifikasi sebelum waktu ditambah.`);
+  }
+}
+function recordVerification(waId, type, latitude=null, longitude=null) {
+  const id = normalizeWaId(waId); if (!id) throw new Error('Nomor WhatsApp tidak valid.');
+  const isLocation = type === 'location';
+  db.prepare(`INSERT INTO rental_verifications (wa_id, location_received, video_received, location_latitude, location_longitude) VALUES (?, ?, ?, ?, ?) ON CONFLICT(wa_id) DO UPDATE SET location_received=MAX(rental_verifications.location_received, excluded.location_received), video_received=MAX(rental_verifications.video_received, excluded.video_received), location_latitude=COALESCE(excluded.location_latitude, rental_verifications.location_latitude), location_longitude=COALESCE(excluded.location_longitude, rental_verifications.location_longitude), updated_at=CURRENT_TIMESTAMP`).run(id, isLocation ? 1 : 0, isLocation ? 0 : 1, latitude, longitude);
+  audit(id, `rental.verification.${type}`, 'evidence received');
+  return db.prepare('SELECT * FROM rental_verifications WHERE wa_id=?').get(id);
+}
+function addBlacklist(waId, reason, accountCode='', actor='admin') {
+  const normalized = normalizeWaId(waId);
+  if (!normalized) throw new Error('Nomor WhatsApp wajib diisi.');
+  db.prepare("INSERT INTO rental_blacklist (wa_id, reason, account_code, created_by) VALUES (?,?,?,?) ON CONFLICT(wa_id) DO UPDATE SET reason=excluded.reason, account_code=excluded.account_code, created_by=excluded.created_by").run(normalized, String(reason || 'Pelanggaran aturan rental').slice(0,1000), String(accountCode || ''), actor);
+  audit(actor, 'rental.blacklist.added', `${normalized}: ${reason}`);
+}
+function removeBlacklist(waId, actor='admin') { db.prepare('DELETE FROM rental_blacklist WHERE wa_id=?').run(normalizeWaId(waId)); audit(actor, 'rental.blacklist.removed', normalizeWaId(waId)); }
+function listBlacklist() { return db.prepare('SELECT * FROM rental_blacklist ORDER BY id DESC').all(); }
 function listRentals() {
   return db.prepare(`SELECT r.*, a.account_code, a.game_code, a.game_name, a.status AS account_status
     FROM rental_sessions r JOIN rental_accounts a ON a.id=r.account_id ORDER BY r.id DESC LIMIT 300`).all();
@@ -241,6 +290,6 @@ function setMaintenance(id, enabled) {
 function getRentalById(id) { return db.prepare(`SELECT r.*, a.account_code, a.game_code, a.game_name, a.status AS account_status FROM rental_sessions r JOIN rental_accounts a ON a.id=r.account_id WHERE r.id=?`).get(id); }
 
 // Idempotent periodic maintenance. Timers run in-process; keep a single Railway replica for this SQLite-backed app.
-setInterval(() => { try { expirePending(); expireActive(); sendThreeMinuteReminders(); } catch (error) { console.error('Rental maintenance error:', error.message); } }, 15_000).unref();
+setInterval(() => { try { expirePending(); expireActive(); sendThreeMinuteReminders(); sendFiveMinuteReminders(); } catch (error) { console.error('Rental maintenance error:', error.message); } }, 15_000).unref();
 
-module.exports = { createAccount, updateAccount, deleteAccount, listAccounts, createRental, markRentalPaid, expirePending, cancelPendingRental, reportIssue, resolveIssue, expireActive, listRentals, getRentalPrices, upsertPrice, setMaintenance };
+module.exports = { createAccount, updateAccount, deleteAccount, listAccounts, createRental, markRentalPaid, expirePending, cancelPendingRental, reportIssue, resolveIssue, expireActive, listRentals, getRentalPrices, upsertPrice, setMaintenance, addBlacklist, removeBlacklist, listBlacklist, recordVerification };
