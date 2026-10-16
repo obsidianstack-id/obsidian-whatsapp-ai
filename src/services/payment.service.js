@@ -100,16 +100,21 @@ async function createDynamicPayment(order) {
     throw new Error('Respons provider tidak berisi reference/transaction_id. Adapter perlu disesuaikan.');
   }
 
-  db.prepare(
-    `UPDATE orders SET payment_reference = ?, payment_url = ?, payment_qr = ?,
-       expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE order_code = ?`,
-  ).run(
-    String(reference),
-    data.payment_url || data.checkout_url || '',
-    data.qr_image_url || data.qr_string || '',
-    data.expires_at || order.expires_at,
-    order.order_code,
-  );
+  if (String(order.order_code).startsWith('RNT-')) {
+    db.prepare(`UPDATE rental_sessions SET payment_reference=?, payment_method='dynamic', payment_due_at=?, updated_at=CURRENT_TIMESTAMP WHERE rental_code=?`)
+      .run(String(reference), data.expires_at || order.expires_at, order.order_code);
+  } else {
+    db.prepare(
+      `UPDATE orders SET payment_reference = ?, payment_url = ?, payment_qr = ?,
+         expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE order_code = ?`,
+    ).run(
+      String(reference),
+      data.payment_url || data.checkout_url || '',
+      data.qr_image_url || data.qr_string || '',
+      data.expires_at || order.expires_at,
+      order.order_code,
+    );
+  }
 
   audit('system', 'payment.created', `${order.order_code} ref=${reference}`);
   return { ...data, reference };
