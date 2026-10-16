@@ -17,7 +17,10 @@ let socket = null;
 let qrDataUrl = null;
 let connectionStatus = 'DISCONNECTED';
 let startPromise = null;
-const authDirectory = path.resolve(process.env.AUTH_DIR || './auth');
+// Keep WhatsApp session files under the shared persistent root by default.
+// AUTH_DIR remains supported for existing deployments that explicitly set it.
+const storageDirectory = path.resolve(process.env.STORAGE_DIR || './storage');
+const authDirectory = path.resolve(process.env.AUTH_DIR || path.join(storageDirectory, 'auth'));
 fs.mkdirSync(authDirectory, { recursive: true });
 
 function recordMessage(waId, direction, sender, body, messageId = '') {
@@ -214,8 +217,8 @@ async function handleMessage(message) {
     const accounts = rentalService.listAccounts().filter((a) => a.active && a.status === 'available');
     const prices = rentalService.getRentalPrices().filter((p) => p.active);
     const accountLines = accounts.length ? accounts.map((a) => `• *${a.account_code}* — ${a.game_name || a.game_code}`).join('\n') : 'Belum ada akun yang tersedia saat ini.';
-    const priceLines = prices.length ? prices.map((p) => `• ${p.game_code} ${p.duration_minutes} menit — ${formatPrice(p.price)}`).join('\n') : 'Harga sewa belum diatur admin.';
-    return sendText(waId, `🎮 *Daftar akun rental*\n${accountLines}\n\n💰 *Durasi & harga*\n${priceLines}\n\nUntuk antre/sewa, ketik: *SEWA KODE_AKUN DURASI_MENIT*\nContoh: *SEWA FF-1 60*\n\nJika akun sedang dipakai, kamu akan masuk antrean otomatis. Ketik *CS* untuk bantuan.`);
+    const priceLines = prices.length ? prices.map((p) => `• ${p.game_code} tarif dasar ${p.duration_minutes} menit — ${formatPrice(p.price)}${p.custom_duration_enabled ? ' (durasi bebas tersedia)' : ''}`).join('\n') : 'Harga sewa belum diatur admin.';
+    return sendText(waId, `🎮 *Daftar akun rental*\n${accountLines}\n\n💰 *Durasi & harga*\n${priceLines}\n\nUntuk antre/sewa, ketik: *SEWA KODE_AKUN DURASI_MENIT*\nContoh paket: *SEWA FF-1 30* atau durasi sendiri: *SEWA FF-1 17*\n\nJika akun sedang dipakai, kamu akan masuk antrean otomatis. Ketik *CS* untuk bantuan.`);
   }
   if (normalized.includes('akun tidak bisa diloginkan') || normalized.includes('akun tidak bisa login') || normalized === 'gagal login') {
     try { rentalService.reportIssue(waId); } catch (error) { return sendText(waId, error.message); }
