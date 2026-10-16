@@ -7,6 +7,7 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestWaWebVersion,
+  downloadMediaMessage,
 } = require('@whiskeysockets/baileys');
 const { db, getSettings, audit } = require('../database/db');
 const { askOpenRouter } = require('./ai.service');
@@ -187,7 +188,10 @@ async function handleMessage(message) {
 
   const waId = remoteJid;
   const text = extractText(message).trim();
-  if (!text) return;
+  const incomingContent = message.message || {};
+  const hasLocation = Boolean(incomingContent.locationMessage || incomingContent.liveLocationMessage);
+  const hasVideo = Boolean(incomingContent.videoMessage);
+  if (!text && !hasLocation && !hasVideo) return;
 
   if (message.key?.fromMe) {
     recordMessage(waId, 'out', 'phone', text, message.key?.id || '');
@@ -201,6 +205,32 @@ async function handleMessage(message) {
   const sender = message.pushName || waId.split('@')[0];
   recordMessage(waId, 'in', sender, text, message.key?.id || '');
   const settings = getSettings();
+  const adminNumber = String(settings.admin_whatsapp || '').replace(/\D/g, '');
+  const adminJid = adminNumber ? `${adminNumber}@s.whatsapp.net` : '';
+  if (hasLocation) {
+    const location = incomingContent.locationMessage || incomingContent.liveLocationMessage;
+    rentalService.recordVerification(waId, 'location', location.degreesLatitude, location.degreesLongitude);
+    if (adminJid) {
+      const phone = waId.split('@')[0];
+      await sendText(adminJid, `SHARELOK, ${phone}\nLatitude: ${location.degreesLatitude}\nLongitude: ${location.degreesLongitude}\nPeta: https://maps.google.com/?q=${location.degreesLatitude},${location.degreesLongitude}`);
+      await socket.sendMessage(adminJid, { location: { degreesLatitude: location.degreesLatitude, degreesLongitude: location.degreesLongitude, name: `Lokasi penyewa ${phone}` } });
+    }
+    return sendText(waId, '✅ Sharelok diterima dan diteruskan ke admin. Selanjutnya kirim video wajah sambil menyebut “Rental dulu, Bos”. Setelah keduanya diterima, kamu bisa order.');
+  }
+  if (hasVideo) {
+    const phone = waId.split('@')[0];
+    const recentCompleted = rentalService.listRentals().find((r) => r.wa_id === waId && r.status === 'completed' && r.ends_at && Date.now() - Date.parse(r.ends_at) < 2 * 60 * 60 * 1000);
+    const evidenceType = recentCompleted ? 'REKAMAN_LOGOUT' : 'VIDEO_MUKA';
+    if (!recentCompleted) rentalService.recordVerification(waId, 'video');
+    if (adminJid) {
+      await sendText(adminJid, `${evidenceType}, ${phone}\n${recentCompleted ? `Bukti logout untuk akun ${recentCompleted.account_code} / rental ${recentCompleted.rental_code}.` : 'Video verifikasi diterima. Admin perlu memeriksa secara manual bahwa penyewa menyebut “Rental dulu, Bos”.'}`);
+      try {
+        const buffer = await downloadMediaMessage(message, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: socket.updateMediaMessage });
+        await socket.sendMessage(adminJid, { video: buffer, mimetype: incomingContent.videoMessage.mimetype || 'video/mp4', caption: `${evidenceType}, ${phone}` });
+      } catch (error) { console.error('Forward rental video failed:', error.message); await sendText(adminJid, `Gagal meneruskan video otomatis untuk ${phone}; minta pelanggan kirim ulang.`); }
+    }
+    return sendText(waId, recentCompleted ? '✅ Rekaman layar diterima dan diteruskan ke admin untuk pemeriksaan logout.' : '✅ Video diterima. Admin akan memeriksa videonya. Jika sharelok dan video sudah terkirim, kamu bisa melanjutkan dengan perintah SEWA.');
+  }
   const conversation = db.prepare('SELECT * FROM conversations WHERE wa_id = ?').get(waId);
   const normalized = text.toLowerCase();
 
@@ -213,26 +243,55 @@ async function handleMessage(message) {
   if (['produk', '1', 'lihat produk', 'katalog'].includes(normalized)) {
     return sendProductCatalog(waId, settings);
   }
-  if (['rental', 'sewa', 'akun game', 'akun rental'].includes(normalized)) {
+  if (['rental', 'sewa', 'akun game', 'akun rental', 'list'].includes(normalized)) {
     const accounts = rentalService.listAccounts().filter((a) => a.active && a.status === 'available');
     const prices = rentalService.getRentalPrices().filter((p) => p.active);
     const accountLines = accounts.length ? accounts.map((a) => `• *${a.account_code}* — ${a.game_name || a.game_code}`).join('\n') : 'Belum ada akun yang tersedia saat ini.';
     const priceLines = prices.length ? prices.map((p) => `• ${p.game_code} tarif dasar ${p.duration_minutes} menit — ${formatPrice(p.price)}${p.custom_duration_enabled ? ' (durasi bebas tersedia)' : ''}`).join('\n') : 'Harga sewa belum diatur admin.';
-    return sendText(waId, `🎮 *Daftar akun rental*\n${accountLines}\n\n💰 *Durasi & harga*\n${priceLines}\n\nUntuk antre/sewa, ketik: *SEWA KODE_AKUN DURASI_MENIT*\nContoh paket: *SEWA FF-1 30* atau durasi sendiri: *SEWA FF-1 17*\n\nJika akun sedang dipakai, kamu akan masuk antrean otomatis. Ketik *CS* untuk bantuan.`);
+    return sendText(waId, `🎮 *Daftar akun rental*\n${accountLines}\n\n💰 *Durasi & harga*\n${priceLines}\n\nUntuk sewa: *SEWA FF-1 1JAM* atau *SEWA FF-1 60*\nBayar dengan kode pendek yang bot berikan: *BAYARBOS FF-1 A7*\nKetik *CEK FF-1* untuk detail akun\n\nJika akun sedang dipakai, kamu akan masuk antrean otomatis. Ketik *CS* untuk bantuan.`);
   }
-  if (normalized.includes('akun tidak bisa diloginkan') || normalized.includes('akun tidak bisa login') || normalized === 'gagal login') {
-    try { rentalService.reportIssue(waId); } catch (error) { return sendText(waId, error.message); }
+  if (/^cek\s+[a-z0-9_-]+$/i.test(text.trim())) {
+    const accountCode = text.trim().split(/\s+/)[1].toUpperCase();
+    const account = rentalService.listAccounts().find((item) => item.account_code.toUpperCase() === accountCode && item.active);
+    if (!account) return sendText(waId, 'Akun tidak ditemukan. Ketik *LIST* untuk melihat stok.');
+    let photos = []; try { photos = JSON.parse(account.photos_json || '[]'); } catch {}
+    const details = `🎮 *${account.account_code}* — ${account.game_name || account.game_code}\nStatus: ${account.status === 'available' ? 'Ready' : 'Sedang disewa/ditahan'}\nSpek: ${account.notes || 'Spesifikasi belum ditambahkan admin.'}`;
+    await sendText(waId, details);
+    for (const photo of photos.slice(0, 10)) { try { if (/^https?:\/\//i.test(photo)) await socket.sendMessage(waId, { image: { url: photo }, caption: `Foto spek ${account.account_code}` }); } catch (error) { console.error('Rental photo send failed:', error.message); } }
+    return;
+  }
+  if (normalized.includes('akun kena banned') || normalized.includes('kena banned') || normalized.includes('akun tidak bisa diloginkan') || normalized.includes('akun tidak bisa login') || normalized === 'gagal login') {
+    try { rentalService.reportIssue(waId); } catch (error) { const adminNumber = String(settings.admin_whatsapp || '').replace(/\D/g, ''); return sendText(waId, `Silakan hubungi owner/CS di sini: ${adminNumber ? `https://wa.me/${adminNumber}` : 'nomor CS belum diatur di panel admin'}. Laporan ini belum terkait dengan sesi rental aktif.`); }
     return;
   }
   if (normalized.startsWith('sewa ')) {
     const parts = text.trim().split(/\s+/);
-    if (parts.length < 3) return sendText(waId, 'Format sewa: *SEWA KODE_AKUN DURASI_MENIT* (contoh: SEWA FF-1 60).');
+    if (parts.length < 2) return sendText(waId, 'Format sewa: *SEWA FF-1 1JAM* atau *SEWA FF-1 60*.');
+    const durationToken = String(parts[2] || '60').toUpperCase();
+    const durationMatch = durationToken.match(/^(\d+)(MENIT|M|JAM|J|H)?$/);
+    const durationMinutes = durationMatch ? Number(durationMatch[1]) * (['JAM','J','H'].includes(durationMatch[2] || '') ? 60 : 1) : Number(durationToken);
     try {
-      const rental = rentalService.createRental({ accountCode: parts[1], waId, customerName: sender, durationMinutes: Number(parts[2]) });
+      const rental = rentalService.createRental({ accountCode: parts[1], waId, customerName: sender, durationMinutes });
       if (rental.queued) return sendText(waId, `🕒 *Kamu masuk antrean rental*\nKode antrean: *${rental.rental_code}*\nAkun: *${rental.account_code}*\nPosisi antrean: ${rental.queue_position || 'berikutnya tersedia'}\nKamu belum perlu membayar sekarang. Bot akan memberi tahu saat akun tersedia dan timer pembayaran dimulai.`);
       const staticReady = Boolean(settings.static_qris_image);
-      return sendText(waId, `🧾 *Reservasi rental dibuat*\nKode: *${rental.rental_code}*\nAkun: *${rental.account_code}* (${rental.game_name})\nDurasi: ${rental.duration_minutes} menit\nTotal: ${formatPrice(rental.price)}\n\nSelesaikan pembayaran dalam ${Math.max(1, Number(settings.rental_payment_hold_minutes)||20)} menit. Jika lewat, reservasi dibatalkan otomatis dan giliran diberikan kepada antrean berikutnya.\n${settings.payment_dynamic_enabled === '1' ? `Ketik *BAYAR RENTAL ${rental.rental_code} DINAMIS* untuk meminta tagihan otomatis.` : (staticReady ? `Ketik *BAYAR RENTAL ${rental.rental_code} STATIS* untuk melihat QRIS.` : 'Admin belum mengatur QRIS. Ketik CS untuk bantuan.')}`);
+      return sendText(waId, `🧾 *Reservasi rental dibuat*\nKode: *${rental.rental_code}*\nKode unik: *${rental.unique_code}*\nAkun: *${rental.account_code}* (${rental.game_name})\nDurasi: ${rental.duration_minutes} menit\nTotal: ${formatPrice(rental.price)}\n\nSelesaikan pembayaran dalam ${Math.max(1, Number(settings.rental_payment_hold_minutes)||20)} menit. Jika lewat, reservasi dibatalkan otomatis dan giliran diberikan kepada antrean berikutnya.\n${settings.payment_dynamic_enabled === '1' ? `Ketik *BAYARBOS ${rental.account_code} ${rental.unique_code}* untuk meminta tagihan otomatis.\nFormat lama tetap bisa: BAYAR RENTAL ${rental.rental_code} DINAMIS` : (staticReady ? `Ketik *BAYARBOS ${rental.account_code} ${rental.unique_code}* atau BAYAR RENTAL ${rental.rental_code} STATIS.` : 'Pembayaran belum diaktifkan admin. Ketik CS untuk bantuan.')}`);
     } catch (error) { return sendText(waId, `Rental belum bisa dibuat: ${error.message}`); }
+  }
+  if (normalized.startsWith('bayarbos ')) {
+    const parts = text.trim().split(/\s+/);
+    const accountCode = String(parts[1] || '').toUpperCase();
+    const uniqueCode = String(parts[2] || '').toUpperCase();
+    if (!accountCode || !/^[A-Z0-9]{2}$/.test(uniqueCode)) return sendText(waId, 'Format pembayaran: *BAYARBOS FF-1 A7* (kode unik 2 karakter dari bot).');
+    const rental = rentalService.listRentals().find((r) => r.wa_id === waId && String(r.account_code).toUpperCase() === accountCode && String(r.unique_code || '').toUpperCase() === uniqueCode);
+    if (!rental) return sendText(waId, 'Reservasi tidak ditemukan. Periksa kode akun dan kode unik yang diberikan bot.');
+    if (rental.status !== 'waiting_payment') return sendText(waId, `Status reservasi: ${rental.status}. Kode pembayaran hanya berlaku untuk reservasi yang menunggu pembayaran.`);
+    if (Date.now() > Date.parse(rental.payment_due_at)) { rentalService.expirePending(); return sendText(waId, 'Batas pembayaran sudah habis. Reservasi dibatalkan otomatis. Silakan pesan kembali.'); }
+    try {
+      const payment = await createDynamicPayment({ order_code: rental.rental_code, rental_code: rental.rental_code, total: rental.price, price: rental.price, wa_id: rental.wa_id, expires_at: rental.payment_due_at });
+      const link = payment.payment_url || payment.redirect_url || payment.checkout_url || '';
+      if (!link) return sendText(waId, 'Tagihan dibuat tetapi tautan pembayaran tidak diterima. Hubungi CS; jangan membuat pembayaran berulang.');
+      return sendText(waId, `💳 *TAGIHAN RENTAL ${rental.account_code}*\nKode unik: *${uniqueCode}*\nDurasi: ${rental.duration_minutes} menit\nTotal: ${formatPrice(rental.price)}\n\nBayar melalui tautan aman Midtrans berikut:\n${link}\n\nDetail login akan dikirim otomatis setelah pembayaran diverifikasi.`);
+    } catch (error) { return sendText(waId, `Pembayaran dinamis belum tersedia: ${error.message}`); }
   }
   if (normalized.startsWith('bayar rental ')) {
     const parts = text.trim().split(/\s+/);
