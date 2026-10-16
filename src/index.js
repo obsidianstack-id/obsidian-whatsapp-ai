@@ -34,7 +34,7 @@ const LOGIN_MAX_ATTEMPTS = 10;
 app.disable('x-powered-by');
 app.set('trust proxy', 1); // Railway terminates HTTPS in front of the app.
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '8mb' }));
 app.use(express.urlencoded({ extended: false, limit: '2mb' }));
 const uploadDirectory = path.resolve(process.env.STORAGE_DIR || './storage', 'uploads', 'rental');
 fs.mkdirSync(uploadDirectory, { recursive: true });
@@ -161,6 +161,7 @@ app.get('/api/bootstrap', requireAuth, (req, res) => {
     orders,
     rentalAccounts: rentalService.listAccounts(),
     rentals: rentalService.listRentals(),
+    nightBookings: rentalService.listNightBookings(),
     rentalBlacklist: rentalService.listBlacklist(),
     rentalPrices: rentalService.getRentalPrices(),
     conversations,
@@ -178,7 +179,7 @@ const ALLOWED_SETTINGS = new Set([
   'static_qris_instructions', 'payment_provider_name', 'payment_create_url', 'payment_status_url',
   'payment_api_key', 'payment_merchant_id', 'payment_mode', 'payment_dynamic_enabled',
   'payment_webhook_secret', 'payment_expiry_minutes', 'currency', 'human_handover_message',
-  'auto_reply_enabled', 'sticker_spam_enabled', 'rental_payment_hold_minutes', 'rental_issue_report_minutes', 'rental_night_start', 'rental_night_end', 'rental_intro_message', 'rental_booking_enabled', 'rental_booking_dp',
+  'auto_reply_enabled', 'sticker_spam_enabled', 'rental_payment_hold_minutes', 'rental_issue_report_minutes', 'rental_night_start', 'rental_night_end', 'rental_intro_message', 'rental_booking_enabled', 'rental_booking_dp', 'rental_night_price',
 ]);
 const SECRET_SETTINGS = new Set(['openrouter_api_key', 'payment_api_key', 'payment_webhook_secret']);
 
@@ -451,6 +452,7 @@ app.post('/api/webhooks/payment', async (req, res) => {
       const verified = await getMidtransTransactionStatus(orderCode, settings);
       const expectedAmount = orderCode.startsWith('RNT-')
         ? db.prepare('SELECT price AS total, payment_status FROM rental_sessions WHERE rental_code=?').get(orderCode)
+        : orderCode.startsWith('NGT-') ? db.prepare(`SELECT CASE WHEN dp_order_code=? THEN dp_amount ELSE balance_amount END AS total, CASE WHEN dp_order_code=? THEN payment_status ELSE status END AS payment_status FROM rental_night_bookings WHERE dp_order_code=? OR balance_order_code=?`).get(orderCode,orderCode,orderCode,orderCode)
         : db.prepare('SELECT total, payment_status FROM orders WHERE order_code=?').get(orderCode);
       if (!expectedAmount) return res.status(404).json({ error: 'Transaksi tidak ditemukan.' });
       if (verified.order_id && String(verified.order_id) !== orderCode) return res.status(400).json({ error: 'Kode transaksi Midtrans tidak cocok.' });
@@ -459,13 +461,15 @@ app.post('/api/webhooks/payment', async (req, res) => {
         audit('system', 'midtrans.amount_mismatch', `${orderCode} expected=${expectedAmount.total} actual=${verified.gross_amount}`);
         return res.status(400).json({ error: 'Nominal transaksi Midtrans tidak cocok dengan pesanan.' });
       }
-      if (expectedAmount.payment_status === 'paid') return res.json({ ok: true, duplicate: true });
+      if (expectedAmount.payment_status === 'paid' || (orderCode.startsWith('NGT-') && ['dp_paid','active','completed'].includes(String(expectedAmount.payment_status)))) return res.json({ ok: true, duplicate: true });
       status = String(verified.transaction_status || '').toLowerCase();
       reference = String(verified.transaction_id || reference);
       if (!(['settlement', 'capture'].includes(status) && (!verified.fraud_status || String(verified.fraud_status).toLowerCase() === 'accept'))) {
         if (['expire', 'cancel', 'deny', 'failure'].includes(status)) {
           if (orderCode.startsWith('RNT-')) {
             rentalService.cancelPendingRental(orderCode, status === 'expire' ? 'expired' : 'failed');
+          } else if (orderCode.startsWith('NGT-')) {
+            db.prepare(`UPDATE rental_night_bookings SET status=CASE WHEN dp_order_code=? THEN 'cancelled' ELSE status END, payment_status=CASE WHEN dp_order_code=? THEN ? ELSE payment_status END, balance_order_code=CASE WHEN balance_order_code=? AND status='awaiting_balance' THEN '' ELSE balance_order_code END, balance_url=CASE WHEN balance_order_code=? AND status='awaiting_balance' THEN '' ELSE balance_url END, updated_at=CURRENT_TIMESTAMP WHERE dp_order_code=? OR balance_order_code=?`).run(orderCode,orderCode,status==='expire'?'dp_expired':'dp_failed',orderCode,orderCode,orderCode);
           } else {
             db.prepare("UPDATE orders SET payment_status=?, updated_at=CURRENT_TIMESTAMP WHERE order_code=? AND payment_status='pending'").run(status === 'expire' ? 'expired' : 'failed', orderCode);
           }
@@ -481,6 +485,7 @@ app.post('/api/webhooks/payment', async (req, res) => {
   if (['paid', 'success', 'settlement', 'capture', 'completed'].includes(status)) {
     try {
       if (orderCode.startsWith('RNT-')) rentalService.markRentalPaid(orderCode, reference || orderCode);
+      else if (orderCode.startsWith('NGT-')) rentalService.markNightPaid(orderCode, reference || orderCode);
       else {
         const order = markOrderPaid(orderCode, reference);
         const { sendText } = require('./services/whatsapp.service');
@@ -494,10 +499,12 @@ app.post('/api/webhooks/payment', async (req, res) => {
   }
   if (['expired', 'expire'].includes(status)) {
     if (orderCode.startsWith('RNT-')) rentalService.cancelPendingRental(orderCode, 'expired');
+    else if (orderCode.startsWith('NGT-')) db.prepare(`UPDATE rental_night_bookings SET status=CASE WHEN dp_order_code=? THEN 'cancelled' ELSE status END,payment_status=CASE WHEN dp_order_code=? THEN 'dp_expired' ELSE payment_status END,balance_order_code=CASE WHEN balance_order_code=? AND status='awaiting_balance' THEN '' ELSE balance_order_code END,balance_url=CASE WHEN balance_order_code=? AND status='awaiting_balance' THEN '' ELSE balance_url END,updated_at=CURRENT_TIMESTAMP WHERE dp_order_code=? OR balance_order_code=?`).run(orderCode,orderCode,orderCode,orderCode,orderCode,orderCode);
     else db.prepare("UPDATE orders SET payment_status='expired', updated_at=CURRENT_TIMESTAMP WHERE order_code=? AND payment_status='pending'").run(orderCode);
   }
   if (['failed', 'deny', 'cancelled', 'canceled', 'failure', 'cancel'].includes(status)) {
     if (orderCode.startsWith('RNT-')) rentalService.cancelPendingRental(orderCode, 'failed');
+    else if (orderCode.startsWith('NGT-')) db.prepare(`UPDATE rental_night_bookings SET status=CASE WHEN dp_order_code=? THEN 'cancelled' ELSE status END,payment_status=CASE WHEN dp_order_code=? THEN 'dp_failed' ELSE payment_status END,balance_order_code=CASE WHEN balance_order_code=? AND status='awaiting_balance' THEN '' ELSE balance_order_code END,balance_url=CASE WHEN balance_order_code=? AND status='awaiting_balance' THEN '' ELSE balance_url END,updated_at=CURRENT_TIMESTAMP WHERE dp_order_code=? OR balance_order_code=?`).run(orderCode,orderCode,orderCode,orderCode,orderCode,orderCode);
     else db.prepare("UPDATE orders SET payment_status='failed', updated_at=CURRENT_TIMESTAMP WHERE order_code=? AND payment_status='pending'").run(orderCode);
   }
   return res.json({ ok: true, status });
