@@ -1,10 +1,10 @@
 # Obsidian Stack — WhatsApp AI Commerce
 
-Single-business WhatsApp AI customer service with admin dashboard, product/inventory management, orders, OpenRouter configuration, manual customer-service takeover, static QRIS settings and a generic dynamic-payment adapter contract.
+Single-business WhatsApp AI customer service with admin dashboard, product/inventory management, rental accounts, orders, OpenRouter configuration, static QRIS, generic provider support, and a Midtrans Snap integration for Sandbox/Production.
 
 ## Important scope notes
 
-- This is a runnable foundation, not a certified payment integration. Dynamic QRIS APIs differ by provider. The generic adapter in `src/services/payment.service.js` expects a provider endpoint that accepts `{order_id, amount, currency, customer_phone, callback_url}` and returns a reference plus optional payment URL/QR fields. Adapt it to the selected provider's official API before accepting real payments.
+- Midtrans Snap integration uses the official Snap transaction endpoint, stores the redirect URL for product orders and rentals, verifies notification signatures, and fetches transaction status from Midtrans before fulfilling a payment. Configure the Midtrans notification URL to `https://YOUR-DOMAIN/api/webhooks/payment`. Sandbox is the default; never use production keys while testing. Non-Midtrans providers still use the generic adapter and require provider-specific validation.
 - The QRIS static setting accepts a public image URL. Local image upload is not included in this initial package.
 - Admin manual payment verification is provided, but use it only after independently verifying funds.
 - Baileys is an unofficial WhatsApp Web integration. It can break when WhatsApp changes its protocol. Consider official WhatsApp Business Platform for production use; verify its features and limitations for your use case.
@@ -27,6 +27,15 @@ Single-business WhatsApp AI customer service with admin dashboard, product/inven
 6. Log in with `ADMIN_PASSWORD`.
 7. Configure OpenRouter from AI Settings, add products, then open WhatsApp and start the connection.
 8. Scan the QR with WhatsApp Business → Linked devices → Link a device.
+
+## Midtrans Sandbox setup
+
+1. In Admin Panel → **Pembayaran**, set **Nama provider** to `Midtrans` and **Mode** to `Sandbox / test`.
+2. Paste the Midtrans **Server Key** from the Sandbox dashboard into **API Key / Server Key**, then save. The panel masks the stored key; a blank key field on refresh is intentional and does not erase the stored key.
+3. You may instead set `MIDTRANS_SERVER_KEY`, `MIDTRANS_CLIENT_KEY`, and `MIDTRANS_IS_PRODUCTION=false` in Railway Variables; the Server Key environment variable takes precedence over the panel key. In the panel set **Nama provider** to `Midtrans`, enable **pembayaran dinamis**, save, then click **Periksa kelengkapan** to run a real Sandbox Snap transaction creation test (Rp1.000). This creates a test transaction in Midtrans Sandbox but does not create a customer order in the app.
+4. Ensure `PUBLIC_BASE_URL` is the public HTTPS Railway URL. The app sends `X-Override-Notification` to `/api/webhooks/payment` when creating Snap transactions. If your Midtrans account configuration overrides notification routing, also set the Notification URL in Midtrans Dashboard to `https://YOUR-DOMAIN/api/webhooks/payment`.
+5. In WhatsApp, create a rental and use the short format `BAYARBOS FF-1 A7` with the two-character unique code shown in the reservation. The legacy format `BAYAR RENTAL RNT-... DINAMIS` remains supported. The bot should return the Snap payment URL. Complete a Sandbox payment and verify that the panel marks it paid, sends credentials only after verified status, and starts the rental timer.
+6. Do not switch to Production until the Sandbox flow and webhook have been tested end-to-end. Use the Production Server Key only after you intentionally select Production mode.
 
 ## Railway setup
 
@@ -85,11 +94,17 @@ Admin Panel memiliki menu **Rental Game** untuk menambahkan akun game, mengatur 
 
 Perintah WhatsApp:
 
-- `RENTAL` — melihat akun tersedia dan tarif.
-- `SEWA FF-1 60` — meminta sewa akun selama 60 menit. Ganti kode dan durasi sesuai inventaris/tarif admin.
+- `LIST` atau `RENTAL` — melihat akun tersedia dan tarif.
+- `CEK FF-1` — melihat catatan spesifikasi akun dan hingga 10 foto URL yang diatur admin.
+- `SEWA FF-1 60` atau `SEWA FF-1 1JAM` — meminta sewa akun selama 60 menit. Ganti kode dan durasi sesuai inventaris/tarif admin.
+- `BAYARBOS FF-1 A7` — meminta tagihan untuk reservasi yang cocok dengan nomor pengirim, kode akun, dan kode unik 2 karakter. Kode unik bukan kode pembayaran Midtrans; status lunas tetap diverifikasi oleh Midtrans.
 - `BAYAR RENTAL RNT-... STATIS` — menampilkan instruksi QRIS statis jika admin sudah mengatur QRIS.
 - `BAYAR RENTAL RNT-... DINAMIS` — meminta tagihan melalui adapter pembayaran dinamis yang sudah dikonfigurasi.
 - `AKUN TIDAK BISA DILOGINKAN` — menjeda timer sewa aktif, menandai akun bermasalah, dan mengirim notifikasi ke nomor admin yang disimpan di Pengaturan bisnis.
+- Sebelum order, pelanggan harus mengirim share lokasi WhatsApp dan video wajah. Lokasi diteruskan dengan format `SHARELOK, NOMOR_BUYER`; video diteruskan dengan `VIDEO_MUKA, NOMOR_BUYER`. Admin tetap perlu memeriksa isi video secara manual.
+- Video yang dikirim dalam dua jam setelah sesi selesai diteruskan sebagai `REKAMAN_LOGOUT, NOMOR_BUYER`.
+- Blacklist dikelola melalui form Blacklist di panel Rental Game; nomor yang diblokir tidak bisa membuat reservasi baru.
+- Foto spesifikasi akun dapat diatur di form inventaris sebagai maksimal 10 URL gambar publik, satu URL per baris.
 
 Alur penting:
 
@@ -97,7 +112,9 @@ Alur penting:
 - Akun yang sudah dipesan/aktif tidak dapat diberikan ke penyewa lain.
 - Kredensial hanya dikirim setelah pembayaran ditandai terverifikasi oleh admin atau webhook provider dinamis yang valid.
 - Timer sewa dimulai ketika pembayaran terverifikasi. Jika pelanggan melaporkan masalah login, timer dijeda; saat admin memilih **Akun normal**, durasi perbaikan ditambahkan ke akhir masa sewa.
-- Setelah masa sewa berakhir, akun dilepas dan penyewa berikutnya di antrean diberi kesempatan.
+- Lima menit sebelum masa sewa berakhir, bot mengirim pengingat perpanjangan. Pembuatan tagihan perpanjangan otomatis masih perlu pengembangan lanjutan.
+- Setelah masa sewa berakhir, bot meminta logout dan rekaman layar; akun masuk status maintenance agar admin memeriksa sebelum mengaktifkannya kembali.
+- Blacklist dikelola admin pada panel dan hanya digunakan untuk pelanggaran yang sudah diperiksa, bukan pelanggan yang sekadar bertanya.
 - Setelah tiga menit, bot mengirim pengingat bahwa waktu sewa terus dihitung jika tidak ada laporan masalah.
 
 **Penting:** QRIS statis tidak bisa mengonfirmasi pembayaran secara otomatis dari gambar atau pesan pelanggan; admin harus memverifikasi uang masuk. Otomatisasi pembayaran penuh memerlukan provider pembayaran nyata yang mendukung webhook, dan adapter API generik perlu disesuaikan serta diuji terhadap dokumentasi provider. Timer in-process ini membutuhkan satu replica Railway dan persistent volume di `DATA_DIR` serta `AUTH_DIR`; untuk reliabilitas produksi lebih tinggi, gunakan scheduler persisten/worker dan database terkelola.
