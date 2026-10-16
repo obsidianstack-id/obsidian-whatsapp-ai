@@ -246,9 +246,13 @@ async function handleMessage(message) {
   if (['rental', 'sewa', 'akun game', 'akun rental', 'list'].includes(normalized)) {
     const accounts = rentalService.listAccounts().filter((a) => a.active && a.status === 'available');
     const prices = rentalService.getRentalPrices().filter((p) => p.active);
-    const accountLines = accounts.length ? accounts.map((a) => `• *${a.account_code}* — ${a.game_name || a.game_code}`).join('\n') : 'Belum ada akun yang tersedia saat ini.';
+    const hourly = accounts.filter(a => a.active && a.status === 'available');
+    const accountLines = hourly.length ? hourly.map((a) => `• *${a.account_code}* — ${a.game_name || a.game_code}`).join('\n') : 'Belum ada akun per jam yang ready.';
     const priceLines = prices.length ? prices.map((p) => `• ${p.game_code} tarif dasar ${p.duration_minutes} menit — ${formatPrice(p.price)}${p.custom_duration_enabled ? ' (durasi bebas tersedia)' : ''}`).join('\n') : 'Harga sewa belum diatur admin.';
-    return sendText(waId, `🎮 *Daftar akun rental*\n${accountLines}\n\n💰 *Durasi & harga*\n${priceLines}\n\nUntuk sewa: *SEWA FF-1 1JAM* atau *SEWA FF-1 60*\nBayar dengan kode pendek yang bot berikan: *BAYARBOS FF-1 A7*\nKetik *CEK FF-1* untuk detail akun\n\nJika akun sedang dipakai, kamu akan masuk antrean otomatis. Ketik *CS* untuk bantuan.`);
+    const nightStart = settings.rental_night_start || '21:00'; const nightEnd = settings.rental_night_end || '07:00';
+    const nightLines = hourly.length ? hourly.map((a) => `• *${a.account_code}* — ${a.game_name || a.game_code}`).join('\n') : 'Belum ada akun paket malam yang ready.';
+    const intro = String(settings.rental_intro_message || '').trim();
+    return sendText(waId, `${intro ? intro.replaceAll('{business}', settings.business_name) + '\n\n' : `Halo! Terima kasih sudah menghubungi ${settings.business_name} 😎\n\n`}🔥 *STOK RENTAL PER JAM READY* 🔥\n${accountLines}\n\n🌙 *STOK PAKET MALAM (${nightStart}–${nightEnd} WIB)*\n${nightLines}\n\n📌 *CARA ORDER RENTAL*\n1. Ketik *LIST* untuk melihat stok dan harga.\n2. Ketik *CEK FF-1* untuk detail akun.\n3. Pesan dengan *SEWA FF-1 1JAM* atau *SEWA FF-1 60*.\n4. Bot memberikan kode pembayaran unik.\n5. Bayar terpisah dengan *BAYARBOS FF-1 A7* (ganti sesuai kode dari bot).\n6. Akun dikirim setelah pembayaran terverifikasi.\n7. Ikuti instruksi sharelok/video verifikasi dan logout saat waktu habis.\n\n💰 *DURASI & HARGA*\n${priceLines}\n\nKetik *CEK FF-1* untuk detail akun. Ketik *CS* untuk bantuan.`);
   }
   if (/^cek\s+[a-z0-9_-]+$/i.test(text.trim())) {
     const accountCode = text.trim().split(/\s+/)[1].toUpperCase();
