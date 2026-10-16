@@ -28,12 +28,13 @@ function createAccount(input) {
   if (!accountCode.startsWith(`${gameCode}-`) && !accountCode.startsWith(`${gameCode} `)) {
     throw new Error(`Kode akun harus diawali ${gameCode}- (contoh ${gameCode}-1).`);
   }
+  const loginType = String(input.login_type || 'Email/ID').trim().slice(0,40);
   const username = String(input.login_username || '').trim();
   const password = String(input.login_password || '').trim();
   if (!username || !password) throw new Error('Username dan password akun wajib diisi.');
-  const result = db.prepare(`INSERT INTO rental_accounts (account_code, game_code, game_name, login_username, login_password, notes, active)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(accountCode, gameCode, String(input.game_name || gameCode).trim(), username, password,
+  const result = db.prepare(`INSERT INTO rental_accounts (account_code, game_code, game_name, login_type, login_username, login_password, notes, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(accountCode, gameCode, String(input.game_name || gameCode).trim(), loginType, username, password,
       String(input.notes || '').slice(0,1000), input.active === false ? 0 : 1);
   audit('admin', 'rental.account.created', accountCode);
   return getAccount(result.lastInsertRowid);
@@ -46,11 +47,12 @@ function updateAccount(id, input) {
   }
   const codeValue = String(input.account_code || account.account_code).trim().toUpperCase();
   const gameCode = String(input.game_code || account.game_code).trim().toUpperCase();
+  const loginType = String(input.login_type ?? account.login_type ?? 'Email/ID').trim().slice(0,40);
   const username = String(input.login_username ?? account.login_username).trim();
   const password = String(input.login_password ?? account.login_password).trim();
   if (!codeValue.startsWith(`${gameCode}-`) && !codeValue.startsWith(`${gameCode} `)) throw new Error(`Kode akun harus diawali ${gameCode}-`);
-  db.prepare(`UPDATE rental_accounts SET account_code=?, game_code=?, game_name=?, login_username=?, login_password=?, notes=?, active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-    .run(codeValue, gameCode, String(input.game_name ?? account.game_name), username, password,
+  db.prepare(`UPDATE rental_accounts SET account_code=?, game_code=?, game_name=?, login_type=?, login_username=?, login_password=?, notes=?, active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+    .run(codeValue, gameCode, String(input.game_name ?? account.game_name), loginType, username, password,
       String(input.notes ?? account.notes).slice(0,1000), input.active === false ? 0 : 1, id);
   audit('admin', 'rental.account.updated', codeValue);
   return getAccount(id);
@@ -80,8 +82,17 @@ function createRental({ accountCode, waId, customerName='', durationMinutes }) {
   if (duration < 1) throw new Error('Durasi sewa tidak valid.');
   const account = db.prepare(`SELECT * FROM rental_accounts WHERE account_code=? AND active=1`).get(String(accountCode).toUpperCase());
   if (!account) throw new Error('Kode akun tidak ditemukan atau sedang nonaktif.');
-  const priceRow = db.prepare('SELECT price FROM rental_prices WHERE game_code=? AND duration_minutes=? AND active=1').get(account.game_code, duration);
-  if (!priceRow) throw new Error(`Harga durasi ${duration} menit untuk ${account.game_code} belum diatur admin.`);
+  const priceRow = db.prepare('SELECT price, duration_minutes, custom_duration_enabled FROM rental_prices WHERE game_code=? AND duration_minutes=? AND active=1').get(account.game_code, duration);
+  let finalPrice;
+  if (priceRow) {
+    finalPrice = Number(priceRow.price);
+  } else {
+    const baseRate = db.prepare('SELECT duration_minutes, price, custom_duration_enabled FROM rental_prices WHERE game_code=? AND active=1 ORDER BY duration_minutes ASC LIMIT 1').get(account.game_code);
+    if (!baseRate) throw new Error(`Tarif dasar untuk ${account.game_code} belum diatur admin.`);
+    if (!baseRate.custom_duration_enabled) throw new Error(`Durasi ${duration} menit tidak tersedia. Pilih durasi paket yang tercantum.`);
+    finalPrice = Math.ceil((duration / Number(baseRate.duration_minutes)) * Number(baseRate.price));
+  }
+  if (!Number.isSafeInteger(finalPrice) || finalPrice < 1) throw new Error('Harga rental hasil perhitungan tidak valid.');
   const existing = db.prepare(`SELECT id FROM rental_sessions WHERE wa_id=? AND status IN ('waiting_payment','queued','active','problem')`).get(waId);
   if (existing) throw new Error('Kamu sudah memiliki pesanan/sewa yang belum selesai. Selesaikan dulu sebelum membuat pesanan baru.');
   const occupied = account.status !== 'available';
@@ -98,7 +109,7 @@ function createRental({ accountCode, waId, customerName='', durationMinutes }) {
   });
   const rental = transaction();
   audit(waId, 'rental.created', `${rentalCode} account=${account.account_code} status=${status}`);
-  return { ...rental, account_code: account.account_code, game_code: account.game_code, queued: occupied };
+  return { ...rental, price: finalPrice, account_code: account.account_code, game_code: account.game_code, game_name: account.game_name, queued: occupied };
 }
 function getRentalByCode(codeValue) {
   return db.prepare(`SELECT r.*, a.account_code, a.game_code, a.game_name, a.login_username, a.login_password, a.status AS account_status
@@ -120,7 +131,7 @@ function markRentalPaid(codeValue, reference='manual-admin') {
   });
   transaction();
   const active = getRentalByCode(codeValue);
-  send(active.wa_id, `✅ Pembayaran rental *${active.rental_code}* terkonfirmasi.\n🎮 Akun: *${active.account_code}* (${active.game_name})\n👤 Username/ID: ${active.login_username}\n🔐 Password: ${active.login_password}\n⏱️ Durasi: ${active.duration_minutes} menit\n🕒 Waktu sewa mulai sekarang dan berakhir sekitar ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}.\n\nJika tidak bisa login, ketik persis: *AKUN TIDAK BISA DILOGINKAN* dalam 3 menit pertama. Jika tidak ada laporan dalam 3 menit, waktu sewa tetap dihitung dari saat pembayaran terkonfirmasi.`);
+  send(active.wa_id, `✅ Pembayaran rental *${active.rental_code}* terkonfirmasi.\n🎮 Akun: *${active.account_code}* (${active.game_name})\n🔑 Metode login: ${active.login_type || 'Email/ID'}\n👤 Username/ID: ${active.login_username}\n🔐 Password: ${active.login_password}\n⏱️ Durasi: ${active.duration_minutes} menit\n🕒 Waktu sewa mulai sekarang dan berakhir sekitar ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}.\n\nJika tidak bisa login, ketik persis: *AKUN TIDAK BISA DILOGINKAN* dalam 3 menit pertama. Jika tidak ada laporan dalam 3 menit, waktu sewa tetap dihitung dari saat pembayaran terkonfirmasi.`);
   adminNotify(`Pembayaran rental ${active.rental_code} terkonfirmasi. Akun ${active.account_code}, penyewa ${active.wa_id}, durasi ${active.duration_minutes} menit.`);
   audit('system', 'rental.paid', `${codeValue} reference=${reference}`);
   return active;
@@ -202,9 +213,9 @@ function upsertPrice(input) {
   const gameCode = String(input.game_code || '').trim().toUpperCase();
   const duration = mins(input.duration_minutes, 0);
   const price = Math.round(Number(input.price));
-  if (!gameCode || !duration || !Number.isFinite(price) || price < 0) throw new Error('Kode game, durasi, dan harga valid wajib diisi.');
-  db.prepare(`INSERT INTO rental_prices (game_code, duration_minutes, price, active) VALUES (?,?,?,1)
-    ON CONFLICT(game_code,duration_minutes) DO UPDATE SET price=excluded.price, active=1`).run(gameCode,duration,price);
+  if (!gameCode || !duration || !Number.isFinite(price) || price < 1) throw new Error('Kode game, durasi, dan harga valid wajib diisi.');
+  db.prepare(`INSERT INTO rental_prices (game_code, duration_minutes, price, active, custom_duration_enabled) VALUES (?,?,?,1,?)
+    ON CONFLICT(game_code,duration_minutes) DO UPDATE SET price=excluded.price, active=1, custom_duration_enabled=excluded.custom_duration_enabled`).run(gameCode,duration,price,input.custom_duration_enabled === false || String(input.custom_duration_enabled)==='0' ? 0 : 1);
   audit('admin','rental.price.updated',`${gameCode}:${duration}=${price}`);
 }
 function setMaintenance(id, enabled) {
