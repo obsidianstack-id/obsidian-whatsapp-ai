@@ -11,7 +11,7 @@ const {
   sendManual,
   setConversationMode,
 } = require('./services/whatsapp.service');
-const { verifyWebhook, markOrderPaid, isMidtrans, verifyMidtransSignature, getMidtransTransactionStatus, createMidtransPayment } = require('./services/payment.service');
+const { verifyWebhook, markOrderPaid, isMidtrans, midtransServerKey, verifyMidtransSignature, getMidtransTransactionStatus, createMidtransPayment } = require('./services/payment.service');
 const rentalService = require('./services/rental.service');
 
 if (!process.env.ADMIN_PASSWORD || !process.env.SESSION_SECRET) {
@@ -158,6 +158,7 @@ app.get('/api/bootstrap', requireAuth, (req, res) => {
     orders,
     rentalAccounts: rentalService.listAccounts(),
     rentals: rentalService.listRentals(),
+    rentalBlacklist: rentalService.listBlacklist(),
     rentalPrices: rentalService.getRentalPrices(),
     conversations,
     messages,
@@ -200,7 +201,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
 app.post('/api/payments/test', requireAuth, async (req, res) => {
   const settings = getSettings();
   if (!isMidtrans(settings)) return res.status(400).json({ error: 'Pilih nama provider Midtrans terlebih dahulu.' });
-  if (!settings.payment_api_key) return res.status(400).json({ error: 'Server Key Midtrans belum disimpan.' });
+  if (!midtransServerKey(settings)) return res.status(400).json({ error: 'Server Key Midtrans belum disimpan pada Railway atau Panel Admin.' });
   try {
     const testCode = `OBSIDIAN-TEST-${Date.now()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
     const data = await createMidtransPayment({ order_code: testCode, total: 1000, wa_id: '' }, settings);
@@ -310,6 +311,17 @@ app.delete('/api/products/:id', requireAuth, (req, res) => {
   return res.json({ ok: true });
 });
 
+app.post('/api/rentals/blacklist', requireAuth, (req, res) => {
+  try {
+    rentalService.addBlacklist(req.body.wa_id, req.body.reason, req.body.account_code || '', 'admin');
+    return res.json({ ok: true });
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+});
+app.delete('/api/rentals/blacklist/:waId', requireAuth, (req, res) => {
+  try { rentalService.removeBlacklist(decodeURIComponent(req.params.waId), 'admin'); return res.json({ ok: true }); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
 app.post('/api/rentals/accounts', requireAuth, (req, res) => {
   try { const account = rentalService.createAccount(req.body || {}); return res.json({ ok: true, id: account.id }); }
   catch (error) { return res.status(400).json({ error: error.message }); }
@@ -406,7 +418,7 @@ app.post('/api/webhooks/payment', async (req, res) => {
   const settings = getSettings();
   const midtrans = isMidtrans(settings);
   if (midtrans) {
-    if (!verifyMidtransSignature(body, settings.payment_api_key)) return res.status(401).json({ error: 'Signature Midtrans tidak valid.' });
+    if (!verifyMidtransSignature(body, midtransServerKey(settings))) return res.status(401).json({ error: 'Signature Midtrans tidak valid.' });
   } else if (!verifyWebhook(req)) {
     return res.status(401).json({ error: 'Webhook secret tidak valid.' });
   }
