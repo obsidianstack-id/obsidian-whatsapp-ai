@@ -125,3 +125,28 @@ Alur penting:
 - Added editable rental intro message, night-package start/end time, and booking DP settings.
 - Rental `LIST` response now gives a step-by-step order and separate payment instruction using the short `BAYARBOS ACCOUNT CODE` format.
 - Note: night-package inventory is currently presented from the available inventory; per-account hourly/night classification, automated DP booking, and paid extension transaction flow are not yet implemented in this release. The DP setting is configuration only and does not itself take deposits.
+
+
+## v1.9 rental flow updates
+- Added account classification for hourly vs night package in the admin account editor.
+- WhatsApp welcome menu now points customers to one consolidated RENTAL guide.
+- Rental list separates hourly stock from night-package stock.
+- Hourly rental accepts compact commands such as `FF-2 1` (one hour) and keeps payment as a separate `BAYARBOS` step.
+- Night booking remains deliberately guarded: automatic DP collection, account lock after DP, and night-start confirmation are not yet end-to-end implemented; the bot directs these requests to CS instead of charging the wrong price or exposing credentials.
+
+
+## Update v1.10.0 — alur rental paket malam
+
+- Paket malam memiliki harga paket terpisah (`rental_night_price`, default Rp30.000) dan DP terpisah (`rental_booking_dp`, default Rp10.000), dapat diatur di Panel Admin.
+- Pesan `KODE-AKUN MALAM` membuat invoice DP Midtrans. Data login tidak dikirim setelah DP. Setelah DP terverifikasi, stok dikunci.
+- Saat jadwal malam dimulai, bot mengirim pengingat. Pelanggan mengirim ulang `KODE-AKUN MALAM` untuk membuat invoice pelunasan. Login hanya dikirim setelah pelunasan terverifikasi.
+- Transaksi paket malam ditampilkan terpisah dari transaksi per jam di panel. Pengingat 5 menit dan akhir sesi malam diproses oleh scheduler aplikasi.
+- Webhook Midtrans memeriksa order ID, nominal, status transaksi dan signature sebelum mengubah status rental.
+- Migrasi database dilakukan otomatis ketika aplikasi mulai; jangan menghapus volume/data SQLite saat deploy.
+
+### Catatan sebelum produksi
+
+1. Isi `MIDTRANS_SERVER_KEY`, atur `MIDTRANS_IS_PRODUCTION=false` untuk sandbox, dan pastikan `PUBLIC_BASE_URL` memakai URL publik HTTPS aplikasi. Jangan membagikan server key.
+2. Aktifkan pembayaran dinamis / konfigurasi Midtrans di panel. Uji alur DP dan pelunasan di Sandbox menggunakan nomor uji yang sesuai sebelum produksi.
+3. Set `STORAGE_DIR` pada persistent volume Railway agar database dan foto tidak hilang saat redeploy. Jalankan satu replica aplikasi untuk SQLite dan scheduler in-process.
+4. Bukti video/lokasi tetap perlu diperiksa admin secara manual; bot tidak dapat memastikan isi ucapan dalam video hanya dari metadata.
