@@ -12,6 +12,7 @@ const {
   setConversationMode,
 } = require('./services/whatsapp.service');
 const { verifyWebhook, markOrderPaid } = require('./services/payment.service');
+const rentalService = require('./services/rental.service');
 
 if (!process.env.ADMIN_PASSWORD || !process.env.SESSION_SECRET) {
   console.error('ADMIN_PASSWORD dan SESSION_SECRET wajib diatur pada environment.');
@@ -155,6 +156,9 @@ app.get('/api/bootstrap', requireAuth, (req, res) => {
     settings: safeSettings(settings),
     products,
     orders,
+    rentalAccounts: rentalService.listAccounts(),
+    rentals: rentalService.listRentals(),
+    rentalPrices: rentalService.getRentalPrices(),
     conversations,
     messages,
     stats,
@@ -170,7 +174,7 @@ const ALLOWED_SETTINGS = new Set([
   'static_qris_instructions', 'payment_provider_name', 'payment_create_url', 'payment_status_url',
   'payment_api_key', 'payment_merchant_id', 'payment_mode', 'payment_dynamic_enabled',
   'payment_webhook_secret', 'payment_expiry_minutes', 'currency', 'human_handover_message',
-  'auto_reply_enabled', 'sticker_spam_enabled',
+  'auto_reply_enabled', 'sticker_spam_enabled', 'rental_payment_hold_minutes', 'rental_issue_report_minutes',
 ]);
 const SECRET_SETTINGS = new Set(['openrouter_api_key', 'payment_api_key', 'payment_webhook_secret']);
 
@@ -292,6 +296,42 @@ app.delete('/api/products/:id', requireAuth, (req, res) => {
   return res.json({ ok: true });
 });
 
+app.post('/api/rentals/accounts', requireAuth, (req, res) => {
+  try { const account = rentalService.createAccount(req.body || {}); return res.json({ ok: true, id: account.id }); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+});
+app.put('/api/rentals/accounts/:id', requireAuth, (req, res) => {
+  const id = validateId(req.params.id); if (!id) return res.status(400).json({ error: 'ID akun tidak valid.' });
+  try { rentalService.updateAccount(id, req.body || {}); return res.json({ ok: true }); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+});
+app.delete('/api/rentals/accounts/:id', requireAuth, (req, res) => {
+  const id = validateId(req.params.id); if (!id) return res.status(400).json({ error: 'ID akun tidak valid.' });
+  try { rentalService.deleteAccount(id); return res.json({ ok: true }); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+});
+app.post('/api/rentals/accounts/:id/maintenance', requireAuth, (req, res) => {
+  const id = validateId(req.params.id); if (!id) return res.status(400).json({ error: 'ID akun tidak valid.' });
+  try { rentalService.setMaintenance(id, Boolean(req.body.enabled)); return res.json({ ok: true }); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+});
+app.post('/api/rentals/prices', requireAuth, (req, res) => {
+  try { rentalService.upsertPrice(req.body || {}); return res.json({ ok: true }); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+});
+app.post('/api/rentals/:id/paid', requireAuth, (req, res) => {
+  const id = validateId(req.params.id); if (!id) return res.status(400).json({ error: 'ID rental tidak valid.' });
+  const rental = db.prepare('SELECT rental_code FROM rental_sessions WHERE id=?').get(id);
+  if (!rental) return res.status(404).json({ error: 'Rental tidak ditemukan.' });
+  try { rentalService.markRentalPaid(rental.rental_code, 'manual-admin-verified'); audit('admin','rental.payment.verified',rental.rental_code); return res.json({ ok: true }); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+});
+app.post('/api/rentals/:id/resolve', requireAuth, (req, res) => {
+  const id = validateId(req.params.id); if (!id) return res.status(400).json({ error: 'ID rental tidak valid.' });
+  try { rentalService.resolveIssue(id, req.body.note || 'Akun sudah diperiksa admin dan dinyatakan normal.'); return res.json({ ok: true }); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+});
+
 app.post('/api/orders/:id/paid', requireAuth, (req, res) => {
   const id = validateId(req.params.id);
   if (!id) return res.status(400).json({ error: 'ID pesanan tidak valid.' });
@@ -358,10 +398,14 @@ app.post('/api/webhooks/payment', (req, res) => {
 
   if (['paid', 'success', 'settlement', 'capture', 'completed'].includes(status)) {
     try {
-      const order = markOrderPaid(orderCode, String(reference));
-      const { sendText } = require('./services/whatsapp.service');
-      sendText(order.wa_id, `✅ Pembayaran untuk pesanan *${orderCode}* telah terverifikasi. Terima kasih!`)
-        .catch((error) => console.error('Payment confirmation message failed:', error.message));
+      if (String(orderCode).startsWith('RNT-')) {
+        rentalService.markRentalPaid(String(orderCode), String(reference));
+      } else {
+        const order = markOrderPaid(orderCode, String(reference));
+        const { sendText } = require('./services/whatsapp.service');
+        sendText(order.wa_id, `✅ Pembayaran untuk pesanan *${orderCode}* telah terverifikasi. Terima kasih!`)
+          .catch((error) => console.error('Payment confirmation message failed:', error.message));
+      }
       return res.json({ ok: true });
     } catch (error) {
       return res.status(400).json({ error: error.message });
@@ -369,14 +413,16 @@ app.post('/api/webhooks/payment', (req, res) => {
   }
 
   if (['expired', 'expire'].includes(status)) {
-    db.prepare(
-      "UPDATE orders SET payment_status = 'expired', updated_at = CURRENT_TIMESTAMP WHERE order_code = ? AND payment_status = 'pending'",
-    ).run(orderCode);
+    if (String(orderCode).startsWith('RNT-')) rentalService.expirePending();
+    else db.prepare("UPDATE orders SET payment_status = 'expired', updated_at = CURRENT_TIMESTAMP WHERE order_code = ? AND payment_status = 'pending'").run(orderCode);
   }
   if (['failed', 'deny', 'cancelled', 'canceled'].includes(status)) {
-    db.prepare(
-      "UPDATE orders SET payment_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE order_code = ? AND payment_status = 'pending'",
-    ).run(orderCode);
+    if (String(orderCode).startsWith('RNT-')) {
+      db.prepare("UPDATE rental_sessions SET payment_status='failed', status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE rental_code=? AND payment_status='pending' AND status='waiting_payment'").run(orderCode);
+      rentalService.expirePending();
+    } else {
+      db.prepare("UPDATE orders SET payment_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE order_code = ? AND payment_status = 'pending'").run(orderCode);
+    }
   }
   return res.json({ ok: true, received: true });
 });
