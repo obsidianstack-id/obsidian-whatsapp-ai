@@ -11,6 +11,7 @@ const {
 const { db, getSettings, audit } = require('../database/db');
 const { askOpenRouter } = require('./ai.service');
 const { createOrder, createDynamicPayment } = require('./payment.service');
+const rentalService = require('./rental.service');
 
 let socket = null;
 let qrDataUrl = null;
@@ -208,6 +209,48 @@ async function handleMessage(message) {
   }
   if (['produk', '1', 'lihat produk', 'katalog'].includes(normalized)) {
     return sendProductCatalog(waId, settings);
+  }
+  if (['rental', 'sewa', 'akun game', 'akun rental'].includes(normalized)) {
+    const accounts = rentalService.listAccounts().filter((a) => a.active && a.status === 'available');
+    const prices = rentalService.getRentalPrices().filter((p) => p.active);
+    const accountLines = accounts.length ? accounts.map((a) => `• *${a.account_code}* — ${a.game_name || a.game_code}`).join('\n') : 'Belum ada akun yang tersedia saat ini.';
+    const priceLines = prices.length ? prices.map((p) => `• ${p.game_code} ${p.duration_minutes} menit — ${formatPrice(p.price)}`).join('\n') : 'Harga sewa belum diatur admin.';
+    return sendText(waId, `🎮 *Daftar akun rental*\n${accountLines}\n\n💰 *Durasi & harga*\n${priceLines}\n\nUntuk antre/sewa, ketik: *SEWA KODE_AKUN DURASI_MENIT*\nContoh: *SEWA FF-1 60*\n\nJika akun sedang dipakai, kamu akan masuk antrean otomatis. Ketik *CS* untuk bantuan.`);
+  }
+  if (normalized.includes('akun tidak bisa diloginkan') || normalized.includes('akun tidak bisa login') || normalized === 'gagal login') {
+    try { rentalService.reportIssue(waId); } catch (error) { return sendText(waId, error.message); }
+    return;
+  }
+  if (normalized.startsWith('sewa ')) {
+    const parts = text.trim().split(/\s+/);
+    if (parts.length < 3) return sendText(waId, 'Format sewa: *SEWA KODE_AKUN DURASI_MENIT* (contoh: SEWA FF-1 60).');
+    try {
+      const rental = rentalService.createRental({ accountCode: parts[1], waId, customerName: sender, durationMinutes: Number(parts[2]) });
+      if (rental.queued) return sendText(waId, `🕒 *Kamu masuk antrean rental*\nKode antrean: *${rental.rental_code}*\nAkun: *${rental.account_code}*\nPosisi antrean: ${rental.queue_position || 'berikutnya tersedia'}\nKamu belum perlu membayar sekarang. Bot akan memberi tahu saat akun tersedia dan timer pembayaran dimulai.`);
+      const staticReady = Boolean(settings.static_qris_image);
+      return sendText(waId, `🧾 *Reservasi rental dibuat*\nKode: *${rental.rental_code}*\nAkun: *${rental.account_code}* (${rental.game_name})\nDurasi: ${rental.duration_minutes} menit\nTotal: ${formatPrice(rental.price)}\n\nSelesaikan pembayaran dalam ${Math.max(1, Number(settings.rental_payment_hold_minutes)||20)} menit. Jika lewat, reservasi dibatalkan otomatis dan giliran diberikan kepada antrean berikutnya.\n${settings.payment_dynamic_enabled === '1' ? `Ketik *BAYAR RENTAL ${rental.rental_code} DINAMIS* untuk meminta tagihan otomatis.` : (staticReady ? `Ketik *BAYAR RENTAL ${rental.rental_code} STATIS* untuk melihat QRIS.` : 'Admin belum mengatur QRIS. Ketik CS untuk bantuan.')}`);
+    } catch (error) { return sendText(waId, `Rental belum bisa dibuat: ${error.message}`); }
+  }
+  if (normalized.startsWith('bayar rental ')) {
+    const parts = text.trim().split(/\s+/);
+    const rentalCode = String(parts[2] || '').toUpperCase();
+    const rental = rentalService.listRentals().find((r) => r.rental_code === rentalCode && r.wa_id === waId);
+    if (!rental) return sendText(waId, 'Pesanan rental tidak ditemukan untuk nomor WhatsApp ini.');
+    if (rental.status !== 'waiting_payment') return sendText(waId, `Status rental ${rental.rental_code}: ${rental.status}.`);
+    if (Date.now() > Date.parse(rental.payment_due_at)) { rentalService.expirePending(); return sendText(waId, 'Batas pembayaran sudah habis. Reservasi dibatalkan otomatis.'); }
+    const method = parts.slice(3).join(' ').toLowerCase();
+    if (method.includes('dinamis')) {
+      try {
+        const payment = await createDynamicPayment({ order_code: rental.rental_code, total: rental.price, wa_id: rental.wa_id, expires_at: rental.payment_due_at });
+        const link = payment.payment_url || payment.checkout_url || payment.qr_image_url || payment.qr_string || '';
+        return sendText(waId, `💳 *Tagihan rental ${rental.rental_code}*\nTotal: ${formatPrice(rental.price)}\n${link ? `Link/QR pembayaran: ${link}\n` : ''}Pembayaran akan dikonfirmasi otomatis jika provider mengirim webhook valid.`);
+      } catch (error) { return sendText(waId, `Pembayaran dinamis belum tersedia: ${error.message}`); }
+    }
+    const freshSettings = getSettings();
+    if (!freshSettings.static_qris_image) return sendText(waId, 'QRIS statis belum diatur admin. Ketik *CS*.');
+    await sendText(waId, `💳 *Pembayaran rental ${rental.rental_code}*\nTotal: ${formatPrice(rental.price)}\n${freshSettings.static_qris_instructions}\nSetelah membayar, tunggu verifikasi admin. Data login baru dikirim setelah pembayaran terverifikasi. Batas reservasi: ${new Date(rental.payment_due_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}.`);
+    if (/^https?:\/\//i.test(freshSettings.static_qris_image)) await socket.sendMessage(waId, { image: { url: freshSettings.static_qris_image }, caption: `QRIS rental ${rental.rental_code} — ${formatPrice(rental.price)}` });
+    return;
   }
   if (normalized.startsWith('pesan ')) return handleOrderCommand(waId, sender, text);
   if (normalized.startsWith('bayar ')) return handlePaymentCommand(waId, text);
