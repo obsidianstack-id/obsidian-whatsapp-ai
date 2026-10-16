@@ -68,6 +68,7 @@ async function createMidtransPayment(order, settings = getSettings()) {
   const orderCode = String(order.order_code || order.rental_code || '');
   const existingPayment = orderCode.startsWith('RNT-')
     ? db.prepare('SELECT payment_url, payment_token, payment_method FROM rental_sessions WHERE rental_code=?').get(orderCode)
+    : orderCode.startsWith('NGT-') ? db.prepare(`SELECT CASE WHEN dp_order_code=? THEN dp_url ELSE balance_url END AS payment_url, '' AS payment_token, 'midtrans' AS payment_method FROM rental_night_bookings WHERE dp_order_code=? OR balance_order_code=?`).get(orderCode, orderCode, orderCode)
     : db.prepare('SELECT payment_url, payment_reference, payment_method FROM orders WHERE order_code=?').get(orderCode);
   if (existingPayment?.payment_url && existingPayment.payment_method === 'midtrans') return { payment_url: existingPayment.payment_url, redirect_url: existingPayment.payment_url, token: existingPayment.payment_token || '', reference: orderCode, provider: 'Midtrans', reused: true };
   const amount = Math.round(Number(order.total ?? order.price));
@@ -87,6 +88,9 @@ async function createMidtransPayment(order, settings = getSettings()) {
   if (String(orderCode).startsWith('RNT-')) {
     db.prepare(`UPDATE rental_sessions SET payment_reference=?, payment_token=?, payment_url=?, payment_method='midtrans', updated_at=CURRENT_TIMESTAMP WHERE rental_code=?`)
       .run(orderCode, data.token, data.redirect_url, orderCode);
+  } else if (String(orderCode).startsWith('NGT-')) {
+    db.prepare(`UPDATE rental_night_bookings SET dp_url=CASE WHEN dp_order_code=? THEN ? ELSE dp_url END, balance_url=CASE WHEN balance_order_code=? THEN ? ELSE balance_url END, updated_at=CURRENT_TIMESTAMP WHERE dp_order_code=? OR balance_order_code=?`)
+      .run(orderCode, data.redirect_url, orderCode, data.redirect_url, orderCode, orderCode);
   } else {
     db.prepare(`UPDATE orders SET payment_reference=?, payment_url=?, payment_qr='', payment_method='midtrans', updated_at=CURRENT_TIMESTAMP WHERE order_code=?`)
       .run(orderCode, data.redirect_url, orderCode);
@@ -97,7 +101,7 @@ async function createMidtransPayment(order, settings = getSettings()) {
 
 async function createDynamicPayment(order) {
   const settings = getSettings();
-  if (settings.payment_dynamic_enabled !== '1') throw new Error('QRIS dinamis belum diaktifkan di Panel Admin.');
+  if (settings.payment_dynamic_enabled !== '1' && !isMidtrans(settings)) throw new Error('QRIS dinamis belum diaktifkan di Panel Admin.');
   if (isMidtrans(settings)) return createMidtransPayment(order, settings);
   if (!settings.payment_create_url || !settings.payment_api_key) throw new Error('URL endpoint atau API Key penyedia pembayaran belum dikonfigurasi.');
   const baseUrl = process.env.PUBLIC_BASE_URL || '';
@@ -113,6 +117,9 @@ async function createDynamicPayment(order) {
   if (String(order.order_code).startsWith('RNT-')) {
     db.prepare(`UPDATE rental_sessions SET payment_reference=?, payment_url=?, payment_due_at=?, updated_at=CURRENT_TIMESTAMP WHERE rental_code=?`)
       .run(String(reference), data.payment_url || data.checkout_url || '', data.expires_at || order.expires_at, order.order_code);
+  } else if (String(order.order_code).startsWith('NGT-')) {
+    db.prepare(`UPDATE rental_night_bookings SET dp_reference=CASE WHEN dp_order_code=? THEN ? ELSE dp_reference END, balance_reference=CASE WHEN balance_order_code=? THEN ? ELSE balance_reference END, dp_url=CASE WHEN dp_order_code=? THEN ? ELSE dp_url END, balance_url=CASE WHEN balance_order_code=? THEN ? ELSE balance_url END, updated_at=CURRENT_TIMESTAMP WHERE dp_order_code=? OR balance_order_code=?`)
+      .run(order.order_code, String(reference), order.order_code, String(reference), order.order_code, data.payment_url || data.checkout_url || '', order.order_code, data.payment_url || data.checkout_url || '', order.order_code, order.order_code);
   } else {
     db.prepare(`UPDATE orders SET payment_reference=?, payment_url=?, payment_qr=?, expires_at=?, updated_at=CURRENT_TIMESTAMP WHERE order_code=?`)
       .run(String(reference), data.payment_url || data.checkout_url || '', data.qr_image_url || data.qr_string || '', data.expires_at || order.expires_at, order.order_code);
