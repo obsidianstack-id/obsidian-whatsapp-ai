@@ -11,7 +11,7 @@ const {
   sendManual,
   setConversationMode,
 } = require('./services/whatsapp.service');
-const { verifyWebhook, markOrderPaid } = require('./services/payment.service');
+const { verifyWebhook, markOrderPaid, isMidtrans, verifyMidtransSignature, getMidtransTransactionStatus, createMidtransPayment } = require('./services/payment.service');
 const rentalService = require('./services/rental.service');
 
 if (!process.env.ADMIN_PASSWORD || !process.env.SESSION_SECRET) {
@@ -195,6 +195,20 @@ app.put('/api/settings', requireAuth, (req, res) => {
   setSettings(values);
   audit('admin', 'settings.updated', Object.keys(values).join(','));
   return res.json({ ok: true });
+});
+
+app.post('/api/payments/test', requireAuth, async (req, res) => {
+  const settings = getSettings();
+  if (!isMidtrans(settings)) return res.status(400).json({ error: 'Pilih nama provider Midtrans terlebih dahulu.' });
+  if (!settings.payment_api_key) return res.status(400).json({ error: 'Server Key Midtrans belum disimpan.' });
+  try {
+    const testCode = `OBSIDIAN-TEST-${Date.now()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+    const data = await createMidtransPayment({ order_code: testCode, total: 1000, wa_id: '' }, settings);
+    audit('admin', 'midtrans.configuration.tested', `mode=${settings.payment_mode || 'sandbox'} code=${testCode}`);
+    return res.json({ ok: true, provider: 'Midtrans', mode: settings.payment_mode || 'sandbox', message: 'Server Key diterima Midtrans; Snap transaction berhasil dibuat.', redirect_url: data.redirect_url });
+  } catch (error) {
+    return res.status(502).json({ error: `Tes Midtrans gagal: ${error.message}` });
+  }
 });
 
 app.get('/api/openrouter/models', requireAuth, async (req, res) => {
@@ -387,21 +401,57 @@ app.put('/api/conversations/:waId/mode', requireAuth, (req, res) => {
   }
 });
 
-app.post('/api/webhooks/payment', (req, res) => {
-  if (!verifyWebhook(req)) return res.status(401).json({ error: 'Webhook secret tidak valid.' });
-
+app.post('/api/webhooks/payment', async (req, res) => {
   const body = req.body || {};
-  const status = String(body.status || body.payment_status || body.transaction_status || '').toLowerCase();
-  const orderCode = body.order_id || body.external_id || body.reference_id;
-  const reference = body.reference || body.transaction_id || body.id || '';
+  const settings = getSettings();
+  const midtrans = isMidtrans(settings);
+  if (midtrans) {
+    if (!verifyMidtransSignature(body, settings.payment_api_key)) return res.status(401).json({ error: 'Signature Midtrans tidak valid.' });
+  } else if (!verifyWebhook(req)) {
+    return res.status(401).json({ error: 'Webhook secret tidak valid.' });
+  }
+
+  const orderCode = String(body.order_id || body.external_id || body.reference_id || '');
   if (!orderCode) return res.status(400).json({ error: 'order_id tidak ditemukan.' });
+  let status = String(body.status || body.payment_status || body.transaction_status || '').toLowerCase();
+  let reference = String(body.transaction_id || body.reference || body.id || '');
+  if (midtrans) {
+    try {
+      const verified = await getMidtransTransactionStatus(orderCode, settings);
+      const expectedAmount = orderCode.startsWith('RNT-')
+        ? db.prepare('SELECT price AS total, payment_status FROM rental_sessions WHERE rental_code=?').get(orderCode)
+        : db.prepare('SELECT total, payment_status FROM orders WHERE order_code=?').get(orderCode);
+      if (!expectedAmount) return res.status(404).json({ error: 'Transaksi tidak ditemukan.' });
+      if (verified.order_id && String(verified.order_id) !== orderCode) return res.status(400).json({ error: 'Kode transaksi Midtrans tidak cocok.' });
+      const actualAmount = Number(verified.gross_amount);
+      if (!Number.isFinite(actualAmount) || actualAmount !== Number(expectedAmount.total)) {
+        audit('system', 'midtrans.amount_mismatch', `${orderCode} expected=${expectedAmount.total} actual=${verified.gross_amount}`);
+        return res.status(400).json({ error: 'Nominal transaksi Midtrans tidak cocok dengan pesanan.' });
+      }
+      if (expectedAmount.payment_status === 'paid') return res.json({ ok: true, duplicate: true });
+      status = String(verified.transaction_status || '').toLowerCase();
+      reference = String(verified.transaction_id || reference);
+      if (!(['settlement', 'capture'].includes(status) && (!verified.fraud_status || String(verified.fraud_status).toLowerCase() === 'accept'))) {
+        if (['expire', 'cancel', 'deny', 'failure'].includes(status)) {
+          if (orderCode.startsWith('RNT-')) {
+            rentalService.cancelPendingRental(orderCode, status === 'expire' ? 'expired' : 'failed');
+          } else {
+            db.prepare("UPDATE orders SET payment_status=?, updated_at=CURRENT_TIMESTAMP WHERE order_code=? AND payment_status='pending'").run(status === 'expire' ? 'expired' : 'failed', orderCode);
+          }
+        }
+        return res.json({ ok: true, status });
+      }
+    } catch (error) {
+      console.error('Midtrans notification verification failed:', error.message);
+      return res.status(502).json({ error: 'Gagal memverifikasi status transaksi ke Midtrans.' });
+    }
+  }
 
   if (['paid', 'success', 'settlement', 'capture', 'completed'].includes(status)) {
     try {
-      if (String(orderCode).startsWith('RNT-')) {
-        rentalService.markRentalPaid(String(orderCode), String(reference));
-      } else {
-        const order = markOrderPaid(orderCode, String(reference));
+      if (orderCode.startsWith('RNT-')) rentalService.markRentalPaid(orderCode, reference || orderCode);
+      else {
+        const order = markOrderPaid(orderCode, reference);
         const { sendText } = require('./services/whatsapp.service');
         sendText(order.wa_id, `✅ Pembayaran untuk pesanan *${orderCode}* telah terverifikasi. Terima kasih!`)
           .catch((error) => console.error('Payment confirmation message failed:', error.message));
@@ -411,20 +461,15 @@ app.post('/api/webhooks/payment', (req, res) => {
       return res.status(400).json({ error: error.message });
     }
   }
-
   if (['expired', 'expire'].includes(status)) {
-    if (String(orderCode).startsWith('RNT-')) rentalService.expirePending();
-    else db.prepare("UPDATE orders SET payment_status = 'expired', updated_at = CURRENT_TIMESTAMP WHERE order_code = ? AND payment_status = 'pending'").run(orderCode);
+    if (orderCode.startsWith('RNT-')) rentalService.cancelPendingRental(orderCode, 'expired');
+    else db.prepare("UPDATE orders SET payment_status='expired', updated_at=CURRENT_TIMESTAMP WHERE order_code=? AND payment_status='pending'").run(orderCode);
   }
-  if (['failed', 'deny', 'cancelled', 'canceled'].includes(status)) {
-    if (String(orderCode).startsWith('RNT-')) {
-      db.prepare("UPDATE rental_sessions SET payment_status='failed', status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE rental_code=? AND payment_status='pending' AND status='waiting_payment'").run(orderCode);
-      rentalService.expirePending();
-    } else {
-      db.prepare("UPDATE orders SET payment_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE order_code = ? AND payment_status = 'pending'").run(orderCode);
-    }
+  if (['failed', 'deny', 'cancelled', 'canceled', 'failure', 'cancel'].includes(status)) {
+    if (orderCode.startsWith('RNT-')) rentalService.cancelPendingRental(orderCode, 'failed');
+    else db.prepare("UPDATE orders SET payment_status='failed', updated_at=CURRENT_TIMESTAMP WHERE order_code=? AND payment_status='pending'").run(orderCode);
   }
-  return res.json({ ok: true, received: true });
+  return res.json({ ok: true, status });
 });
 
 app.use(express.static(publicDirectory, { index: false, maxAge: '1h' }));
