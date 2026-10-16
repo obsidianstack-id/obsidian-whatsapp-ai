@@ -211,19 +211,21 @@ async function handleMessage(message) {
     const location = incomingContent.locationMessage || incomingContent.liveLocationMessage;
     rentalService.recordVerification(waId, 'location', location.degreesLatitude, location.degreesLongitude);
     if (adminJid) {
-      const phone = waId.split('@')[0];
+      const phone = `+${String(waId.split('@')[0]).replace(/\D/g, '')}`;
       await sendText(adminJid, `SHARELOK, ${phone}\nLatitude: ${location.degreesLatitude}\nLongitude: ${location.degreesLongitude}\nPeta: https://maps.google.com/?q=${location.degreesLatitude},${location.degreesLongitude}`);
       await socket.sendMessage(adminJid, { location: { degreesLatitude: location.degreesLatitude, degreesLongitude: location.degreesLongitude, name: `Lokasi penyewa ${phone}` } });
     }
     return sendText(waId, '✅ Sharelok diterima dan diteruskan ke admin. Selanjutnya kirim video wajah sambil menyebut “Rental dulu, Bos”. Setelah keduanya diterima, kamu bisa order.');
   }
   if (hasVideo) {
-    const phone = waId.split('@')[0];
+    const phone = `+${String(waId.split('@')[0]).replace(/\D/g, '')}`;
     const recentCompleted = rentalService.listRentals().find((r) => r.wa_id === waId && r.status === 'completed' && r.ends_at && Date.now() - Date.parse(r.ends_at) < 2 * 60 * 60 * 1000);
-    const evidenceType = recentCompleted ? 'REKAMAN_LOGOUT' : 'VIDEO_MUKA';
+    const recentNightCompleted = rentalService.listNightBookings().find((r) => r.wa_id === waId && r.status === 'completed' && r.ends_at && Date.now() - Date.parse(r.ends_at) < 2 * 60 * 60 * 1000);
+    const completedEvidence = recentCompleted || recentNightCompleted;
+    const evidenceType = completedEvidence ? 'REKAMAN_LOGOUT' : 'VIDEO_MUKA';
     if (!recentCompleted) rentalService.recordVerification(waId, 'video');
     if (adminJid) {
-      await sendText(adminJid, `${evidenceType}, ${phone}\n${recentCompleted ? `Bukti logout untuk akun ${recentCompleted.account_code} / rental ${recentCompleted.rental_code}.` : 'Video verifikasi diterima. Admin perlu memeriksa secara manual bahwa penyewa menyebut “Rental dulu, Bos”.'}`);
+      await sendText(adminJid, `${evidenceType}, ${phone}\n${completedEvidence ? `Bukti logout untuk akun ${completedEvidence.account_code} / rental ${completedEvidence.rental_code || completedEvidence.booking_code}.` : 'Video verifikasi diterima. Admin perlu memeriksa secara manual bahwa penyewa menyebut “Rental dulu, Bos”.'}`);
       try {
         const buffer = await downloadMediaMessage(message, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: socket.updateMediaMessage });
         await socket.sendMessage(adminJid, { video: buffer, mimetype: incomingContent.videoMessage.mimetype || 'video/mp4', caption: `${evidenceType}, ${phone}` });
@@ -237,7 +239,7 @@ async function handleMessage(message) {
   if (['menu', 'halo', 'hai', 'hi', 'hello', 'start', 'mulai'].includes(normalized)) {
     return sendText(
       waId,
-      `${settings.welcome_message.replace('{business}', settings.business_name)}\n\n${settings.menu_text}`,
+      `${settings.welcome_message.replace('{business}', settings.business_name)}\n\n${settings.menu_text}\n\nKetik *RENTAL* untuk melihat stok, harga, dan cara pesan rental game dalam satu pesan.`,
     );
   }
   if (['produk', '1', 'lihat produk', 'katalog'].includes(normalized)) {
@@ -246,13 +248,15 @@ async function handleMessage(message) {
   if (['rental', 'sewa', 'akun game', 'akun rental', 'list'].includes(normalized)) {
     const accounts = rentalService.listAccounts().filter((a) => a.active && a.status === 'available');
     const prices = rentalService.getRentalPrices().filter((p) => p.active);
-    const hourly = accounts.filter(a => a.active && a.status === 'available');
+    const hourly = accounts.filter(a => a.active && a.status === 'available' && String(a.rental_mode || 'hourly') === 'hourly');
+    const nightAccounts = accounts.filter(a => a.active && a.status === 'available' && String(a.rental_mode || 'hourly') === 'night');
     const accountLines = hourly.length ? hourly.map((a) => `• *${a.account_code}* — ${a.game_name || a.game_code}`).join('\n') : 'Belum ada akun per jam yang ready.';
-    const priceLines = prices.length ? prices.map((p) => `• ${p.game_code} tarif dasar ${p.duration_minutes} menit — ${formatPrice(p.price)}${p.custom_duration_enabled ? ' (durasi bebas tersedia)' : ''}`).join('\n') : 'Harga sewa belum diatur admin.';
+    const priceLines = prices.length ? prices.map((p) => `• ${p.game_code} tarif dasar ${Math.floor(p.duration_minutes/60)} jam${p.duration_minutes%60 ? ` ${p.duration_minutes%60} menit` : ''} — ${formatPrice(p.price)}${p.custom_duration_enabled ? ' (durasi bebas tersedia)' : ''}`).join('\n') : 'Harga sewa belum diatur admin.';
     const nightStart = settings.rental_night_start || '21:00'; const nightEnd = settings.rental_night_end || '07:00';
-    const nightLines = hourly.length ? hourly.map((a) => `• *${a.account_code}* — ${a.game_name || a.game_code}`).join('\n') : 'Belum ada akun paket malam yang ready.';
+    const nightLines = nightAccounts.length ? nightAccounts.map((a) => `• *${a.account_code}* — ${a.game_name || a.game_code}`).join('\n') : 'Belum ada akun paket malam yang ready.';
+    const nightPrice = formatPrice(settings.rental_night_price || 30000); const nightDp = formatPrice(settings.rental_booking_dp || 10000);
     const intro = String(settings.rental_intro_message || '').trim();
-    return sendText(waId, `${intro ? intro.replaceAll('{business}', settings.business_name) + '\n\n' : `Halo! Terima kasih sudah menghubungi ${settings.business_name} 😎\n\n`}🔥 *STOK RENTAL PER JAM READY* 🔥\n${accountLines}\n\n🌙 *STOK PAKET MALAM (${nightStart}–${nightEnd} WIB)*\n${nightLines}\n\n📌 *CARA ORDER RENTAL*\n1. Ketik *LIST* untuk melihat stok dan harga.\n2. Ketik *CEK FF-1* untuk detail akun.\n3. Pesan dengan *SEWA FF-1 1JAM* atau *SEWA FF-1 60*.\n4. Bot memberikan kode pembayaran unik.\n5. Bayar terpisah dengan *BAYARBOS FF-1 A7* (ganti sesuai kode dari bot).\n6. Akun dikirim setelah pembayaran terverifikasi.\n7. Ikuti instruksi sharelok/video verifikasi dan logout saat waktu habis.\n\n💰 *DURASI & HARGA*\n${priceLines}\n\nKetik *CEK FF-1* untuk detail akun. Ketik *CS* untuk bantuan.`);
+    return sendText(waId, `${intro ? intro.replaceAll('{business}', settings.business_name) + '\n\n' : `Halo! 👋 Selamat datang di ${settings.business_name}. Ada yang bisa kami bantu?\n\n`}🎮 *RENTAL AKUN GAME*\n\n🔥 *PAKET PER JAM*\n${accountLines}\n\n🌙 *PAKET MALAM (${nightStart}–${nightEnd} WIB)*\n${nightLines}\nHarga paket: *${nightPrice}* · DP: *${nightDp}* · Pelunasan setelah DP terverifikasi.\n\n💰 *TARIF PER JAM*\n${priceLines}\n\n📌 *CARA PESAN — PER JAM*\n1. Cek akun: *CEK FF-1*\n2. Pilih durasi, contoh: *FF-2 1* (1 jam) atau *FF-2 2* (2 jam).\n3. Ikuti instruksi verifikasi lokasi dan video jika diminta.\n4. Bot memberi kode pembayaran; bayar dengan *BAYARBOS FF-2 A7* sesuai kode milikmu.\n5. Akun dikirim setelah pembayaran terverifikasi.\n\n🌙 *CARA PESAN — PAKET MALAM*\n1. Pilih akun malam dengan format *FF-2 MALAM*.\n2. Booking/DP dan pelunasan mengikuti instruksi bot; akun tidak dikirim saat DP.\n3. Saat jam malam dimulai, konfirmasi ulang dengan *FF-2 MALAM* untuk melanjutkan proses.\n\nℹ️ *PERINTAH SINGKAT*\n• *LIST* — stok dan harga\n• *CEK FF-1* — detail akun\n• *CS* — bantuan admin\n• Pembayaran selalu menggunakan kode unik yang diberikan bot.`);
   }
   if (/^cek\s+[a-z0-9_-]+$/i.test(text.trim())) {
     const accountCode = text.trim().split(/\s+/)[1].toUpperCase();
@@ -267,6 +271,42 @@ async function handleMessage(message) {
   if (normalized.includes('akun kena banned') || normalized.includes('kena banned') || normalized.includes('akun tidak bisa diloginkan') || normalized.includes('akun tidak bisa login') || normalized === 'gagal login') {
     try { rentalService.reportIssue(waId); } catch (error) { const adminNumber = String(settings.admin_whatsapp || '').replace(/\D/g, ''); return sendText(waId, `Silakan hubungi owner/CS di sini: ${adminNumber ? `https://wa.me/${adminNumber}` : 'nomor CS belum diatur di panel admin'}. Laporan ini belum terkait dengan sesi rental aktif.`); }
     return;
+  }
+  // Short rental aliases: “FF-2 1” means one hour; night booking is a distinct flow.
+  const shortNight = text.trim().match(/^([A-Z]{2,8}-[A-Z0-9_-]+)\s+MALAM$/i);
+  if (shortNight) {
+    const account = rentalService.listAccounts().find((a) => a.account_code.toUpperCase() === shortNight[1].toUpperCase() && a.active);
+    if (!account) return sendText(waId, 'Akun tidak ditemukan. Ketik *LIST* untuk melihat stok.');
+    if (String(account.rental_mode || 'hourly') !== 'night') return sendText(waId, `*${account.account_code}* terdaftar sebagai rental per jam, bukan paket malam. Pilih akun yang ditandai paket malam di LIST.`);
+    if (String(settings.rental_booking_enabled || '1') === '0') return sendText(waId, 'Booking paket malam sedang dinonaktifkan admin. Ketik *CS* untuk bantuan.');
+    try {
+      let booking = rentalService.getNightBooking(waId, account.account_code);
+      if (!booking) {
+        booking = rentalService.createNightBooking({accountCode:account.account_code,waId,customerName:sender});
+        const payment = await createDynamicPayment({order_code:booking.dp_order_code,total:booking.dp_amount,price:booking.dp_amount,wa_id:booking.wa_id,expires_at:booking.due_at});
+        const link=payment.payment_url||payment.redirect_url||payment.checkout_url||'';
+        if(!link) return sendText(waId,'Booking tercatat tetapi tautan pembayaran tidak tersedia. Jangan membuat booking berulang; ketik CS.');
+        return sendText(waId,`🌙 *BOOKING PAKET MALAM*\nAkun: *${booking.account_code}*\nHarga paket: ${formatPrice(booking.total_price)}\nDP sekarang: *${formatPrice(booking.dp_amount)}*\nSisa pelunasan: ${formatPrice(booking.balance_amount)}\nJadwal: ${settings.rental_night_start||'21:00'}–${settings.rental_night_end||'07:00'} WIB\nBatas bayar DP: ${new Date(booking.due_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})} WIB\n\nBayar DP melalui Midtrans: ${link}\nAkun/login tidak akan dikirim pada tahap DP. Setelah DP terverifikasi, ulangi *${account.account_code} MALAM* saat jam mulai untuk membuat tagihan pelunasan.`);
+      }
+      if (booking.status === 'awaiting_dp') return sendText(waId,`Booking *${account.account_code}* masih menunggu DP ${formatPrice(booking.dp_amount)}. Periksa pesan tagihan sebelumnya. Jika tautan hilang, ketik CS agar admin memeriksa booking sebelum menerbitkan tagihan baru.`);
+      const balance = rentalService.continueNightBooking(waId,account.account_code);
+      const payment = await createDynamicPayment(balance); const link=payment.payment_url||payment.redirect_url||payment.checkout_url||'';
+      if(!link) return sendText(waId,'Pelunasan disiapkan tetapi tautan pembayaran tidak tersedia. Ketik CS; jangan membuat booking baru.');
+      return sendText(waId,`🌙 *PELUNASAN PAKET MALAM*\nAkun: *${account.account_code}*\nDP terbayar: ${formatPrice(booking.dp_amount)}\nPelunasan: *${formatPrice(booking.balance_amount)}*\n\nBayar melalui Midtrans: ${link}\nDetail login dikirim otomatis setelah pelunasan terverifikasi.`);
+    } catch(error) { return sendText(waId,`Booking paket malam belum dapat diproses: ${error.message}`); }
+  }
+  const shortHourly = text.trim().match(/^([A-Z]{2,8}-[A-Z0-9_-]+)\s+(\d{1,2})$/i);
+  if (shortHourly) {
+    const account = rentalService.listAccounts().find((a) => a.account_code.toUpperCase() === shortHourly[1].toUpperCase() && a.active);
+    if (!account) return sendText(waId, 'Akun tidak ditemukan. Ketik *LIST* untuk melihat stok.');
+    if (String(account.rental_mode || 'hourly') === 'night') return sendText(waId, `*${account.account_code}* khusus paket malam. Gunakan *${account.account_code} MALAM*; paket malam tidak dihitung per jam.`);
+    const hours = Number(shortHourly[2]);
+    if (hours < 1 || hours > 24) return sendText(waId, 'Durasi harus 1–24 jam. Contoh: *FF-2 1*.');
+    try {
+      const rental = rentalService.createRental({ accountCode: account.account_code, waId, customerName: sender, durationMinutes: hours * 60 });
+      if (rental.queued) return sendText(waId, `🕒 *Masuk antrean*\nAkun: *${rental.account_code}*\nDurasi: ${hours} jam. Bot akan memberi tahu saat akun tersedia.`);
+      return sendText(waId, `🧾 *PESANAN RENTAL PER JAM*\nAkun: *${rental.account_code}*\nDurasi: *${hours} jam*\nTotal: *${formatPrice(rental.price)}*\nKode bayar: *${rental.unique_code}*\n\nBayar terpisah dengan *BAYARBOS ${rental.account_code} ${rental.unique_code}*. Akun hanya dikirim setelah pembayaran terverifikasi.`);
+    } catch (error) { return sendText(waId, `Rental belum bisa dibuat: ${error.message}`); }
   }
   if (normalized.startsWith('sewa ')) {
     const parts = text.trim().split(/\s+/);
