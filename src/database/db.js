@@ -79,6 +79,59 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS rental_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_code TEXT NOT NULL UNIQUE,
+    game_code TEXT NOT NULL,
+    game_name TEXT NOT NULL DEFAULT '',
+    login_username TEXT NOT NULL,
+    login_password TEXT NOT NULL,
+    notes TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'available',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS rental_prices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_code TEXT NOT NULL,
+    duration_minutes INTEGER NOT NULL,
+    price INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(game_code, duration_minutes)
+  );
+
+  CREATE TABLE IF NOT EXISTS rental_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rental_code TEXT NOT NULL UNIQUE,
+    account_id INTEGER NOT NULL,
+    wa_id TEXT NOT NULL,
+    customer_name TEXT DEFAULT '',
+    duration_minutes INTEGER NOT NULL,
+    price INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'waiting_payment',
+    payment_status TEXT NOT NULL DEFAULT 'pending',
+    payment_method TEXT DEFAULT 'static',
+    payment_reference TEXT DEFAULT '',
+    payment_due_at TEXT NOT NULL,
+    paid_at TEXT DEFAULT '',
+    started_at TEXT DEFAULT '',
+    ends_at TEXT DEFAULT '',
+    paused_at TEXT DEFAULT '',
+    paused_seconds INTEGER NOT NULL DEFAULT 0,
+    issue_reported_at TEXT DEFAULT '',
+    issue_note TEXT DEFAULT '',
+    issue_reminder_sent INTEGER NOT NULL DEFAULT 0,
+    queue_position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(account_id) REFERENCES rental_accounts(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_rental_sessions_account_status ON rental_sessions(account_id, status);
+  CREATE INDEX IF NOT EXISTS idx_rental_sessions_due ON rental_sessions(status, payment_due_at);
+
   CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor TEXT NOT NULL,
@@ -96,7 +149,7 @@ const defaults = {
   business_description: 'Selamat datang! Kami siap membantu.',
   business_hours: 'Setiap hari, 09.00–17.00',
   welcome_message: 'Halo! 👋 Selamat datang di {business}. Ada yang bisa kami bantu?',
-  menu_text: 'Silakan pilih:\n1. Lihat produk\n2. Lihat layanan\n3. Cara pembayaran\n4. Hubungi customer service',
+  menu_text: 'Silakan pilih:\n1. Lihat produk\n2. Lihat layanan\n3. Cara pembayaran\n4. Hubungi customer service\n5. Rental akun game (ketik RENTAL)',
   admin_whatsapp: '',
   ai_enabled: '1',
   ai_provider: 'openrouter',
