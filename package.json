@@ -1,8 +1,8 @@
 {
   "name": "obsidian-whatsapp-ai",
-  "version": "1.8.0",
+  "version": "1.10.0",
   "private": true,
-  "description": "Single-business WhatsApp AI customer service, product/order management and configurable payment integrations",
+  "description": "Obsidian Stack WhatsApp AI with hourly and night rental, split DP settlement, Midtrans and admin panel",
   "main": "src/index.js",
   "engines": {
     "node": ">=20"
