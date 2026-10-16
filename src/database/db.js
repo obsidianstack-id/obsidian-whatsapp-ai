@@ -92,6 +92,7 @@ db.exec(`
     login_password TEXT NOT NULL,
     notes TEXT DEFAULT '',
     photos_json TEXT DEFAULT '[]',
+    rental_mode TEXT NOT NULL DEFAULT 'hourly',
     status TEXT NOT NULL DEFAULT 'available',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -142,6 +143,34 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_rental_sessions_account_status ON rental_sessions(account_id, status);
   CREATE INDEX IF NOT EXISTS idx_rental_sessions_due ON rental_sessions(status, payment_due_at);
 
+  CREATE TABLE IF NOT EXISTS rental_night_bookings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_code TEXT NOT NULL UNIQUE,
+    dp_order_code TEXT NOT NULL UNIQUE,
+    balance_order_code TEXT DEFAULT '',
+    account_id INTEGER NOT NULL,
+    wa_id TEXT NOT NULL,
+    customer_name TEXT DEFAULT '',
+    total_price INTEGER NOT NULL,
+    dp_amount INTEGER NOT NULL,
+    balance_amount INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'awaiting_dp',
+    payment_status TEXT NOT NULL DEFAULT 'pending_dp',
+    dp_reference TEXT DEFAULT '',
+    balance_reference TEXT DEFAULT '',
+    dp_url TEXT DEFAULT '',
+    balance_url TEXT DEFAULT '',
+    due_at TEXT DEFAULT '',
+    notified_start INTEGER NOT NULL DEFAULT 0,
+    reminder_5_sent INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT DEFAULT '',
+    ends_at TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(account_id) REFERENCES rental_accounts(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_night_booking_status ON rental_night_bookings(status, due_at);
+
   CREATE TABLE IF NOT EXISTS rental_verifications (
     wa_id TEXT PRIMARY KEY,
     location_received INTEGER NOT NULL DEFAULT 0,
@@ -184,6 +213,9 @@ ensureColumn('rental_sessions', 'payment_token', "TEXT DEFAULT ''");
 ensureColumn('rental_sessions', 'unique_code', "TEXT DEFAULT ''");
 ensureColumn('rental_sessions', 'reminder_5_sent', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('rental_accounts', 'photos_json', "TEXT DEFAULT '[]'");
+ensureColumn('rental_accounts', 'rental_mode', "TEXT NOT NULL DEFAULT 'hourly'");
+ensureColumn('rental_night_bookings', 'reminder_5_sent', 'INTEGER NOT NULL DEFAULT 0');
+
 
 const defaults = {
   business_name: 'Obsidian Stack',
