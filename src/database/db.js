@@ -119,6 +119,8 @@ db.exec(`
     payment_status TEXT NOT NULL DEFAULT 'pending',
     payment_method TEXT DEFAULT 'static',
     payment_reference TEXT DEFAULT '',
+    payment_url TEXT DEFAULT '',
+    payment_token TEXT DEFAULT '',
     payment_due_at TEXT NOT NULL,
     paid_at TEXT DEFAULT '',
     started_at TEXT DEFAULT '',
@@ -156,6 +158,8 @@ function ensureColumn(table, column, definition) {
 }
 ensureColumn('rental_accounts', 'login_type', "TEXT NOT NULL DEFAULT 'Email/ID'");
 ensureColumn('rental_prices', 'custom_duration_enabled', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('rental_sessions', 'payment_url', "TEXT DEFAULT ''");
+ensureColumn('rental_sessions', 'payment_token', "TEXT DEFAULT ''");
 
 const defaults = {
   business_name: 'Obsidian Stack',
