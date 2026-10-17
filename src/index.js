@@ -515,5 +515,19 @@ app.use(express.static(publicDirectory, { index: false, maxAge: '1h' }));
 app.get('*', (req, res) => res.sendFile(path.join(publicDirectory, 'index.html')));
 
 app.listen(port, '0.0.0.0', () => {
+  const storageRoot = path.resolve(process.env.STORAGE_DIR || './storage');
+  const databaseRoot = path.resolve(process.env.DATA_DIR || path.join(storageRoot, 'data'));
+  const whatsappAuthRoot = path.resolve(process.env.AUTH_DIR || path.join(storageRoot, 'auth'));
+  const rentalUploadsRoot = path.resolve(storageRoot, 'uploads', 'rental');
   console.log(`Kwenzy | Utama listening on port ${port}`);
+  console.log(`[PERSISTENCE] STORAGE_DIR=${storageRoot}`);
+  console.log(`[PERSISTENCE] SQLite database=${path.join(databaseRoot, 'obsidian.sqlite')}`);
+  console.log(`[PERSISTENCE] WhatsApp session=${whatsappAuthRoot}`);
+  console.log(`[PERSISTENCE] Rental uploads=${rentalUploadsRoot}`);
+  if (process.env.RAILWAY_ENVIRONMENT && storageRoot !== '/app/storage') {
+    console.warn('[PERSISTENCE WARNING] Railway detected but STORAGE_DIR is not /app/storage. Confirm that STORAGE_DIR and the Persistent Volume mount path match, or data/session may be lost on redeploy.');
+  }
+  if (process.env.DATA_DIR || process.env.AUTH_DIR) {
+    console.warn('[PERSISTENCE WARNING] DATA_DIR/AUTH_DIR override STORAGE_DIR defaults. Confirm both paths are on persistent storage.');
+  }
 });
