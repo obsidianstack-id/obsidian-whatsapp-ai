@@ -90,66 +90,73 @@ function rentalErrorText(error, settings = getSettings()) {
 }
 
 async function sendProductCatalog(waId, settings) {
-  const products = db.prepare(
-    `SELECT id, name, description, price, promo_price, stock, unlimited_stock
-     FROM products WHERE active = 1 ORDER BY name LIMIT 30`,
-  ).all();
-
-  if (!products.length) {
-    return sendText(waId, 'Saat ini katalog belum tersedia. Ketik *CS* untuk menghubungi admin.');
-  }
-
-  const lines = products.map((product, index) => [
-    `${index + 1}. *${product.name}*`,
-    `   Harga: ${formatPrice(product.promo_price ?? product.price)}`,
-    `   Stok: ${product.unlimited_stock ? 'Tersedia' : product.stock}`,
+  const products = db.prepare(`SELECT id, sku, game_code, game_name, name, description, price, promo_price, stock, unlimited_stock, server_required
+    FROM products WHERE active = 1 ORDER BY game_name, name LIMIT 60`).all();
+  if (!products.length) return sendText(waId, 'Saat ini katalog belum tersedia. Ketik *CS* untuk menghubungi admin.');
+  const lines = products.map((product) => [
+    `• *${product.game_name || product.category || 'Produk'} — ${product.name}*`,
+    `  Kode: *${product.sku || product.game_code || product.id}*`,
+    `  Harga: ${formatPrice(product.promo_price ?? product.price)}`,
+    `  Stok: ${product.unlimited_stock ? 'Tersedia' : product.stock}`,
     product.description || '',
   ].filter(Boolean).join('\n'));
-
-  return sendText(
-    waId,
-    `🛍️ *Katalog ${settings.business_name}*\n\n${lines.join('\n\n')}\n\n` +
-      'Untuk memesan, ketik *PESAN nomor_produk jumlah* (contoh: PESAN 1 2).',
-  );
+  return sendText(waId, `🛍️ *Katalog ${settings.business_name || 'Kwenzy | Utama'}*\n\n${lines.join('\n\n')}\n\n*Cara order:* ketik *KODE_PRODUK ID_GAME*\nContoh: *FF70 8273838278*\nJika game meminta server, ketik *KODE_PRODUK ID_GAME ID_SERVER*.\nKetik *CS* jika butuh bantuan.`);
 }
 
 async function handleOrderCommand(waId, sender, text) {
   const parts = text.trim().split(/\s+/);
-  const productIndex = Number(parts[1]);
-  const quantity = Math.max(1, Math.min(1000, Number(parts[2]) || 1));
-  const products = db.prepare(
-    'SELECT id, name FROM products WHERE active = 1 ORDER BY name',
-  ).all();
-  const product = products[productIndex - 1];
-
-  if (!product) {
-    return sendText(waId, 'Nomor produk tidak valid. Ketik *produk* untuk melihat katalog.');
+  const legacy = /^pesan$/i.test(parts[0]);
+  let product;
+  let playerId = '';
+  let serverId = '';
+  if (legacy) {
+    const productIndex = Number(parts[1]);
+    const quantity = Math.max(1, Math.min(1000, Number(parts[2]) || 1));
+    const products = db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY name').all();
+    product = products[productIndex - 1];
+    if (!product) return sendText(waId, 'Nomor produk tidak valid. Ketik *LIHAT* untuk melihat katalog.');
+    // Legacy numeric orders are retained for products not configured as game top-ups.
+    if (product.game_name || product.game_code) return sendText(waId, `Produk ini memerlukan ID game. Ketik *${product.sku} ID_GAME${product.server_required ? ' ID_SERVER' : ''}*. Contoh: *${product.sku} 8273838278${product.server_required ? ' 1234' : ''}*`);
+  } else {
+    const productCode = String(parts[0] || '').toUpperCase();
+    product = db.prepare('SELECT * FROM products WHERE active=1 AND UPPER(COALESCE(sku,\'\'))=?').get(productCode);
+    if (!product) return sendText(waId, `Kode produk *${productCode}* tidak ditemukan. Ketik *LIHAT* untuk melihat katalog.`);
+    playerId = String(parts[1] || '').trim();
+    serverId = String(parts[2] || '').trim();
+    if (!playerId) return sendText(waId, `Masukkan ID game. Format: *${product.sku} ID_GAME${product.server_required ? ' ID_SERVER' : ''}*`);
+    if (product.server_required && !serverId) return sendText(waId, `Produk ${product.game_name || product.category} memerlukan ID dan Server. Format: *${product.sku} ID_GAME ID_SERVER*`);
   }
-
   try {
-    const order = createOrder({
-      waId,
-      customerName: sender,
-      items: [{ productId: product.id, quantity }],
-      paymentMethod: 'static',
-    });
-    return sendText(
-      waId,
-      `🧾 *Pesanan dibuat*\nNomor: ${order.order_code}\nTotal: ${formatPrice(order.total)}\n\n` +
-        `Ketik *BAYAR ${order.order_code}* untuk melihat instruksi pembayaran, atau *CS* untuk bantuan.`,
-    );
-  } catch (error) {
-    return sendText(waId, `Pesanan belum bisa dibuat: ${error.message}`);
-  }
+    const settings = getSettings();
+    let nickname = '';
+    if (playerId && settings.game_nickname_lookup_url) {
+      const url = settings.game_nickname_lookup_url
+        .replaceAll('{game_code}', encodeURIComponent(product.game_code || product.game_name || product.category || ''))
+        .replaceAll('{player_id}', encodeURIComponent(playerId))
+        .replaceAll('{server_id}', encodeURIComponent(serverId));
+      const response = await fetch(url, { headers: { Accept: 'application/json', ...(settings.game_nickname_api_key ? { Authorization: `Bearer ${settings.game_nickname_api_key}` } : {}) }, signal: AbortSignal.timeout(12000) });
+      if (response.ok) { const data = await response.json().catch(() => ({})); nickname = String(data.nickname || data.username || data.name || data.data?.nickname || data.data?.username || '').slice(0,100); }
+    }
+    const order = createOrder({ waId, customerName: sender, items: [{ productId: product.id, quantity: legacy ? Math.max(1, Math.min(1000, Number(parts[2]) || 1)) : 1 }], paymentMethod: 'static', playerId, serverId, gameNickname: nickname });
+    const item = JSON.parse(order.items_json)[0];
+    const total = Math.round(Number(order.total) * (1 + Math.max(0, Number(settings.product_profit_percent) || 0) / 100));
+    if (total !== order.total) db.prepare('UPDATE orders SET total=? WHERE id=?').run(total, order.id);
+    const admin = String(settings.admin_whatsapp || '').replace(/\D/g, '');
+    if (admin) {
+      const adminJid = `${admin}@s.whatsapp.net`;
+      try { await sendText(adminJid, `🛍️ *PESANAN PRODUK BARU*\nNomor: *${order.order_code}*\nKode bayar: *${order.payment_code}*\nGame: *${product.game_name || product.category || '-'}*\nProduk: *${product.name} (${product.sku || '-'})*\nID: *${playerId || '-'}*\nServer: *${serverId || '-'}*\nNickname: *${nickname || 'Belum tersedia / cek manual'}*\nBuyer: ${waId.replace('@s.whatsapp.net','')}\nJumlah: ${item.quantity}\nTotal: *${formatPrice(total)}*\nStatus: Menunggu pembayaran`); } catch (e) { console.error('Forward product order to admin failed:', e.message); }
+    }
+    return sendText(waId, `🧾 *Pesanan dibuat*\nNomor: *${order.order_code}*\n*ID :* ${playerId || '-'}\n*Server :* ${serverId || '-'}\n*Nickname :* ${nickname || 'Belum dapat dicek otomatis; admin akan memeriksa'}\nProduk: ${product.name}\nTotal: ${formatPrice(total)}\n\nKetik *BAYAR ${order.payment_code}* untuk melihat instruksi pembayaran, atau *CS* untuk bantuan.`);
+  } catch (error) { return sendText(waId, `Pesanan belum bisa dibuat: ${error.message}`); }
 }
 
 async function handlePaymentCommand(waId, text) {
   const [command, orderCode, ...options] = text.trim().split(/\s+/);
-  if (!orderCode) return sendText(waId, 'Format: *BAYAR nomor_pesanan*');
+  if (!orderCode) return sendText(waId, 'Format: *BAYAR KODE_UNIK* (contoh: BAYAR 42).');
 
   const order = db.prepare(
-    'SELECT * FROM orders WHERE order_code = ? AND wa_id = ?',
-  ).get(orderCode.toUpperCase(), waId);
+    'SELECT * FROM orders WHERE wa_id = ? AND (order_code = ? OR payment_code = ?)',
+  ).get(waId, orderCode.toUpperCase(), orderCode.toUpperCase());
   if (!order) return sendText(waId, 'Pesanan tidak ditemukan untuk nomor WhatsApp ini.');
   if (order.payment_status === 'paid') return sendText(waId, 'Pesanan ini sudah tercatat lunas. Terima kasih!');
   if (order.payment_status !== 'pending') return sendText(waId, `Status pembayaran pesanan ini: ${order.payment_status}. Hubungi CS jika perlu bantuan.`);
@@ -161,7 +168,7 @@ async function handlePaymentCommand(waId, text) {
       const paymentInfo = payment.payment_url || payment.redirect_url || payment.checkout_url || payment.qr_image_url || payment.qr_string || '';
       return sendText(
         waId,
-        `💳 *Tagihan QRIS Dinamis*\nPesanan: ${order.order_code}\nTotal: ${formatPrice(order.total)}\n` +
+        `💳 *Tagihan QRIS Dinamis*\nPesanan: ${order.order_code}\nKode bayar: ${order.payment_code || '-'}\nTotal: ${formatPrice(order.total)}\n` +
           `${paymentInfo ? `Instruksi/link/QR: ${paymentInfo}\n` : ''}` +
           'Status: menunggu pembayaran. Konfirmasi dilakukan setelah webhook provider diverifikasi.',
       );
@@ -180,7 +187,7 @@ async function handlePaymentCommand(waId, text) {
 
   await sendText(
     waId,
-    `💳 *Pembayaran QRIS Statis*\nPesanan: ${order.order_code}\nTotal: ${formatPrice(order.total)}\n` +
+    `💳 *Pembayaran QRIS Statis*\nPesanan: ${order.order_code}\nKode bayar: ${order.payment_code || '-'}\nTotal: ${formatPrice(order.total)}\n` +
       `${settings.static_qris_instructions}\n\nPembayaran akan diverifikasi admin. Screenshot tidak otomatis membuat pesanan lunas.`,
   );
 
@@ -386,6 +393,7 @@ async function handleMessage(message) {
     return;
   }
   if (normalized.startsWith('pesan ')) return handleOrderCommand(waId, sender, text);
+  if (/^[a-z0-9_-]{2,24}\s+\S+/i.test(text) && !normalized.startsWith('bayar ') && !normalized.startsWith('bayarbos ')) return handleOrderCommand(waId, sender, text);
   if (normalized.startsWith('bayar ')) return handlePaymentCommand(waId, text);
 
   const asksForHuman = ['cs', 'admin', 'customer service', 'hubungi admin', 'bicara dengan admin', 'pemilik']
