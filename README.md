@@ -169,3 +169,12 @@ Alur penting:
 - Perintah bayar menjadi `BAYAR 42` (kode unik 2 digit). Kode dipilih dari kode yang belum dipakai oleh pesanan pending yang belum kedaluwarsa. Kode order lengkap lama tetap diterima.
 - Pada **Pembayaran → Produk Digital / Top Up Game**, pilih `Manual` atau `Otomatis — API provider`, konfigurasi endpoint order, API key, endpoint status (disimpan untuk konfigurasi), serta margin keuntungan (%). Dalam mode manual, admin menerima notifikasi pesanan dan notifikasi setelah pembayaran diverifikasi. Dalam mode API, setelah pembayaran terverifikasi, aplikasi mengirim POST JSON ke endpoint provider dengan `order_id`, `product_code`, `items`, `player_id`, `server_id`, `customer_phone`, dan `amount`, lalu mengirim ringkasan hasil provider ke buyer.
 - API provider berbeda-beda. Endpoint otomatis ini memakai kontrak JSON generik; sesuaikan payload/response jika provider mengharuskan parameter atau signature khusus. Jangan mengaktifkan mode API sebelum melakukan uji dengan dokumentasi provider.
+
+
+## Admin-managed top-up providers (v1.10.7)
+
+- Open Admin Panel → Produk & Stok → API Provider Top Up.
+- Add a provider profile for APIGames.id, Melostore H2H, Distusi, Gofaz, Pasargamer.com, or Custom. Enter the actual HTTPS catalog endpoint, authentication header/prefix, and JSON field paths from that provider's current official documentation.
+- Use **Tes API** to check whether the endpoint returns JSON and a product list. Use **Ambil katalog** to import/update products by SKU. Existing SKU rows are updated; unrelated products are not deleted.
+- Provider profiles are stored in the application's current SQLite database (`obsidian.sqlite`). They are editable from the panel without code changes or redeployment, but they persist across Railway redeploys only if the SQLite database itself is on persistent storage. This version does not store provider profiles in Railway PostgreSQL.
+- This is a configurable generic catalog adapter, not a claim of prebuilt, verified native adapters for every listed provider. Their order/status APIs may require provider-specific signing, payload fields, and response mapping; configure and test against official docs before enabling automatic fulfillment.
