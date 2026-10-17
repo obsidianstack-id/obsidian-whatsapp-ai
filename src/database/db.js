@@ -20,6 +20,11 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sku TEXT UNIQUE,
+    game_code TEXT DEFAULT '',
+    game_name TEXT DEFAULT '',
+    id_label TEXT DEFAULT 'ID Game',
+    server_required INTEGER NOT NULL DEFAULT 0,
+    provider_product_code TEXT DEFAULT '',
     name TEXT NOT NULL,
     category TEXT DEFAULT '',
     description TEXT DEFAULT '',
@@ -65,6 +70,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     order_code TEXT NOT NULL UNIQUE,
+    payment_code TEXT DEFAULT '',
     wa_id TEXT NOT NULL,
     customer_name TEXT DEFAULT '',
     items_json TEXT NOT NULL,
@@ -206,6 +212,17 @@ function ensureColumn(table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
   if (!columns.some((item) => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
+ensureColumn('products', 'game_code', "TEXT DEFAULT ''");
+ensureColumn('products', 'game_name', "TEXT DEFAULT ''");
+ensureColumn('products', 'id_label', "TEXT DEFAULT 'ID Game'");
+ensureColumn('products', 'server_required', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('products', 'provider_product_code', "TEXT DEFAULT ''");
+ensureColumn('orders', 'payment_code', "TEXT DEFAULT ''");
+ensureColumn('orders', 'player_id', "TEXT DEFAULT ''");
+ensureColumn('orders', 'server_id', "TEXT DEFAULT ''");
+ensureColumn('orders', 'game_nickname', "TEXT DEFAULT ''");
+ensureColumn('orders', 'provider_reference', "TEXT DEFAULT ''");
+ensureColumn('orders', 'provider_status', "TEXT DEFAULT ''");
 ensureColumn('rental_accounts', 'login_type', "TEXT NOT NULL DEFAULT 'Email/ID'");
 ensureColumn('rental_prices', 'custom_duration_enabled', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('rental_sessions', 'payment_url', "TEXT DEFAULT ''");
@@ -245,6 +262,14 @@ const defaults = {
   static_qris_image: '',
   static_qris_instructions: 'Scan QRIS berikut melalui aplikasi pembayaran kamu. Jika sudah membayar, mohon tunggu verifikasi transaksi dari admin.',
   payment_provider_name: '',
+  product_provider_mode: 'manual',
+  product_provider_order_url: '',
+  product_provider_status_url: '',
+  product_provider_api_key: '',
+  product_provider_name: '',
+  product_profit_percent: '0',
+  game_nickname_lookup_url: '',
+  game_nickname_api_key: '',
   payment_create_url: '',
   payment_status_url: '',
   payment_api_key: '',
@@ -255,6 +280,8 @@ const defaults = {
   payment_expiry_minutes: '15',
   currency: 'IDR',
   human_handover_message: 'Baik, permintaan kamu sudah diteruskan ke customer service. Mohon tunggu sebentar ya.',
+  rental_verification_message: '⚠️ _Verifikasi Diperlukan_\nSebelum bisa sewa, wajib kirim ke bot:\n1. Share Lokasi WhatsApp (Lokasi saat ini bukan live location)\n2. Video wajah sambil ucapkan “Rental dulu, Bos”\nSetelah terkirim, ketik ulang perintah _SEWA_.',
+  rental_hourly_payment_message: '🧾 *PESANAN RENTAL PER JAM*\nAkun: *{account}*\nDurasi: *{duration}*\nTotal: *{total}*\nKode bayar: *{code}*\n\n*Langkah berikutnya:* ketik *BAYARBOS {account} {code}* untuk melanjutkan transaksi dan membuat tagihan pembayaran. Akun hanya dikirim setelah pembayaran terverifikasi.',
   auto_reply_enabled: '1',
   sticker_spam_enabled: '1',
 };
