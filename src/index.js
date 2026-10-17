@@ -515,5 +515,5 @@ app.use(express.static(publicDirectory, { index: false, maxAge: '1h' }));
 app.get('*', (req, res) => res.sendFile(path.join(publicDirectory, 'index.html')));
 
 app.listen(port, '0.0.0.0', () => {
-  console.log(`Obsidian Stack listening on port ${port}`);
+  console.log(`Kwenzy | Utama listening on port ${port}`);
 });
