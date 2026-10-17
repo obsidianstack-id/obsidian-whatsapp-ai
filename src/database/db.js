@@ -216,13 +216,24 @@ ensureColumn('rental_accounts', 'photos_json', "TEXT DEFAULT '[]'");
 ensureColumn('rental_accounts', 'rental_mode', "TEXT NOT NULL DEFAULT 'hourly'");
 ensureColumn('rental_night_bookings', 'reminder_5_sent', 'INTEGER NOT NULL DEFAULT 0');
 
+// Older panel versions accidentally saved a tariff entered as 1 hour as 1 minute.
+// Repair those legacy rows to 60 minutes (the database keeps minutes internally).
+const legacyMinuteRates = db.prepare('SELECT * FROM rental_prices WHERE duration_minutes > 0 AND duration_minutes < 60').all();
+for (const row of legacyMinuteRates) {
+  const correctHour = db.prepare('SELECT id FROM rental_prices WHERE game_code=? AND duration_minutes=60').get(row.game_code);
+  if (correctHour) {
+    db.prepare('DELETE FROM rental_prices WHERE id=?').run(row.id);
+  } else {
+    db.prepare('UPDATE rental_prices SET duration_minutes=60 WHERE id=?').run(row.id);
+  }
+}
 
 const defaults = {
   business_name: 'Obsidian Stack',
   business_description: 'Selamat datang! Kami siap membantu.',
   business_hours: 'Setiap hari, 09.00–17.00',
-  welcome_message: 'Halo! 👋 Selamat datang di {business}. Ada yang bisa kami bantu?',
-  menu_text: 'Silakan pilih:\n1. Lihat produk\n2. Lihat layanan\n3. Cara pembayaran\n4. Hubungi customer service\n5. Rental akun game (ketik RENTAL)',
+  welcome_message: 'Halo,\nSelamat datang di {business}. Ada yang bisa kami bantu bos?',
+  menu_text: '*Silakan pilih dulu boss:*\n1. Rental akun game (ketik RENTAL)\n2. Lihat produk & Layanan (ketik LIHAT)\n3. Cara pembayaran (ketik CARA BAYAR)\n4. Butuh bantuan (ketik CS)',
   admin_whatsapp: '',
   ai_enabled: '1',
   ai_provider: 'openrouter',
