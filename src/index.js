@@ -179,7 +179,7 @@ const ALLOWED_SETTINGS = new Set([
   'static_qris_instructions', 'payment_provider_name', 'payment_create_url', 'payment_status_url',
   'payment_api_key', 'payment_merchant_id', 'payment_mode', 'payment_dynamic_enabled',
   'payment_webhook_secret', 'payment_expiry_minutes', 'currency', 'human_handover_message',
-  'auto_reply_enabled', 'sticker_spam_enabled', 'rental_payment_hold_minutes', 'rental_issue_report_minutes', 'rental_night_start', 'rental_night_end', 'rental_intro_message', 'rental_booking_enabled', 'rental_booking_dp', 'rental_night_price',
+  'auto_reply_enabled', 'sticker_spam_enabled', 'rental_verification_message', 'rental_hourly_payment_message', 'rental_payment_hold_minutes', 'rental_issue_report_minutes', 'rental_night_start', 'rental_night_end', 'rental_intro_message', 'rental_booking_enabled', 'rental_booking_dp', 'rental_night_price',
 ]);
 const SECRET_SETTINGS = new Set(['openrouter_api_key', 'payment_api_key', 'payment_webhook_secret']);
 
