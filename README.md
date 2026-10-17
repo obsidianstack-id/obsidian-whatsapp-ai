@@ -171,7 +171,7 @@ Alur penting:
 - API provider berbeda-beda. Endpoint otomatis ini memakai kontrak JSON generik; sesuaikan payload/response jika provider mengharuskan parameter atau signature khusus. Jangan mengaktifkan mode API sebelum melakukan uji dengan dokumentasi provider.
 
 
-## Admin-managed top-up providers (v1.10.7)
+## Admin-managed top-up providers (v1.10.8)
 
 - Open Admin Panel → Produk & Stok → API Provider Top Up.
 - Add a provider profile for APIGames.id, Melostore H2H, Distusi, Gofaz, Pasargamer.com, or Custom. Enter the actual HTTPS catalog endpoint, authentication header/prefix, and JSON field paths from that provider's current official documentation.
