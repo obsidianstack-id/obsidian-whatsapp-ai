@@ -41,9 +41,13 @@ Single-business WhatsApp AI customer service with admin dashboard, product/inven
 
 1. Create a new Node.js service and upload these files or deploy the project using your chosen workflow; no GitHub integration is required by the app itself.
 2. Set variables: `ADMIN_PASSWORD`, `SESSION_SECRET`, `PORT` (Railway normally injects this; do not hard-code a conflicting value), `PUBLIC_BASE_URL`, and optionally `PAYMENT_WEBHOOK_SECRET`.
-3. Attach one persistent volume at `/app/storage` and set `STORAGE_DIR=/app/storage`. By default, the app stores the SQLite database in `/app/storage/data/` and WhatsApp session files in `/app/storage/auth/`. Remove old `DATA_DIR` and `AUTH_DIR` variables if you want the unified storage layout; explicit legacy overrides take precedence.
-4. Expose the HTTP service on its listening port so you can access the dashboard and QR page.
-5. Keep HTTPS enabled. Never share QR codes or auth files.
+3. **Attach a Railway Persistent Volume** to this service with mount path exactly `/app/storage`. A variable alone does not make storage persistent.
+4. In Railway → service → Variables, set `STORAGE_DIR=/app/storage`. Remove `DATA_DIR` and `AUTH_DIR` unless you intentionally use separate persistent mount paths; those overrides take precedence over `STORAGE_DIR`.
+5. The app stores its SQLite database at `/app/storage/data/obsidian.sqlite`, WhatsApp/Baileys login session at `/app/storage/auth/`, and rental account photos at `/app/storage/uploads/rental/`. On startup, check the deploy logs for `[PERSISTENCE]` paths and confirm they match the mounted volume.
+6. **Before redeploying an existing live service**, make sure the current database and auth session already live on that volume. If the old data is only in the container filesystem, first copy `/app/storage/data/`, `/app/storage/auth/`, and `/app/storage/uploads/` from the running deployment to the persistent volume. Do not delete the old volume or database during setup. If the old database was stored under another path, copy it before changing `DATA_DIR`.
+7. Keep only **one app replica** when using SQLite and the in-process rental scheduler. Take a backup of the persistent volume/database before major changes.
+8. Expose the HTTP service on its listening port so you can access the dashboard and QR page.
+9. Keep HTTPS enabled. Never share QR codes or auth files.
 
 ## Security before production
 
