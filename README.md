@@ -150,3 +150,10 @@ Alur penting:
 2. Aktifkan pembayaran dinamis / konfigurasi Midtrans di panel. Uji alur DP dan pelunasan di Sandbox menggunakan nomor uji yang sesuai sebelum produksi.
 3. Set `STORAGE_DIR` pada persistent volume Railway agar database dan foto tidak hilang saat redeploy. Jalankan satu replica aplikasi untuk SQLite dan scheduler in-process.
 4. Bukti video/lokasi tetap perlu diperiksa admin secara manual; bot tidak dapat memastikan isi ucapan dalam video hanya dari metadata.
+
+
+## v1.10.2 update
+- Tarif dasar pada panel sekarang dimasukkan dalam jam; nilai disimpan internal sebagai menit untuk menjaga kompatibilitas transaksi lama.
+- Migrasi memperbaiki tarif legacy yang tersimpan di bawah 60 menit akibat bug input jam.
+- Akun yang dikonfigurasi sebagai rental per jam otomatis tampil sebagai paket malam pada jam malam Jakarta yang diatur panel admin, dan kembali tampil sebagai per jam di luar jadwal. Akun yang secara eksplisit disetel admin sebagai paket malam tetap paket malam.
+- Pesan menu dan panduan rental diperbarui, termasuk alias `RENTAL`, `LIHAT`, `CARA BAYAR`, dan `CS`; perintah lama tetap dipertahankan.
