@@ -229,7 +229,7 @@ for (const row of legacyMinuteRates) {
 }
 
 const defaults = {
-  business_name: 'Obsidian Stack',
+  business_name: 'Kwenzy | Utama',
   business_description: 'Selamat datang! Kami siap membantu.',
   business_hours: 'Setiap hari, 09.00–17.00',
   welcome_message: 'Halo,\nSelamat datang di {business}. Ada yang bisa kami bantu bos?',
@@ -240,7 +240,7 @@ const defaults = {
   openrouter_api_key: process.env.OPENROUTER_API_KEY || '',
   openrouter_model: process.env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
   openrouter_site_url: process.env.OPENROUTER_SITE_URL || '',
-  openrouter_app_name: process.env.OPENROUTER_APP_NAME || 'Obsidian Stack WhatsApp AI',
+  openrouter_app_name: process.env.OPENROUTER_APP_NAME || 'Kwenzy | Utama WhatsApp AI',
   ai_system_prompt: 'Kamu adalah customer service yang ramah, akurat, dan ringkas. Gunakan hanya data bisnis yang diberikan. Jangan mengarang harga, stok, status pembayaran, atau kebijakan. Jika tidak yakin, tawarkan untuk menghubungkan pelanggan dengan admin. Untuk pembelian, arahkan pelanggan melihat produk dan konfirmasi pesanan sebelum membuat tagihan.',
   static_qris_image: '',
   static_qris_instructions: 'Scan QRIS berikut melalui aplikasi pembayaran kamu. Jika sudah membayar, mohon tunggu verifikasi transaksi dari admin.',
@@ -263,6 +263,8 @@ const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VA
 for (const [key, value] of Object.entries(defaults)) {
   insertSetting.run(key, String(value));
 }
+// Branding migration: only replace the previous built-in default; preserve custom business names.
+db.prepare("UPDATE settings SET value='Kwenzy | Utama' WHERE key='business_name' AND value='Obsidian Stack'").run();
 
 function getSettings() {
   return Object.fromEntries(
