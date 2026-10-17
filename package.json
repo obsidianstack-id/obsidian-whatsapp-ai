@@ -1,8 +1,8 @@
 {
   "name": "obsidian-whatsapp-ai",
-  "version": "1.10.5",
+  "version": "1.10.6",
   "private": true,
-  "description": "Kwenzy | Utama WhatsApp AI with hour-based pricing and configurable night-mode rental, split DP settlement, Midtrans and admin panel",
+  "description": "Kwenzy | Utama WhatsApp AI with game top-up product codes, player ID capture, manual/API fulfillment, rental modes, Midtrans and admin panel",
   "main": "src/index.js",
   "engines": {
     "node": ">=20"
