@@ -277,7 +277,7 @@ function markRentalPaid(codeValue, reference='manual-admin') {
   transaction();
   const active = getRentalByCode(codeValue);
   send(active.wa_id, `✅ Pembayaran rental *${active.rental_code}* terkonfirmasi.\n🎮 Akun: *${active.account_code}* (${active.game_name})\n🔑 Metode login: ${active.login_type || 'Email/ID'}\n👤 Username/ID: ${active.login_username}\n🔐 Password: ${active.login_password}\n⏱️ Durasi: ${formatDuration(active.duration_minutes)}\n🕒 Waktu sewa mulai sekarang dan berakhir sekitar ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}.\n\nJika tidak bisa login, ketik persis: *AKUN TIDAK BISA DILOGINKAN* dalam 3 menit pertama. Jika tidak ada laporan dalam 3 menit, waktu sewa tetap dihitung dari saat pembayaran terkonfirmasi.`);
-  adminNotify(`WAKTU_MULAI: ${new Date(active.started_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nWAKTU_BERAKHIR: ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\nNOMOR_BUYER: ${displayPhone(active.wa_id)}\nKODE_AKUN: ${active.account_code}\nKODE_RENTAL: ${active.rental_code}`);
+  adminNotify(`🔔 *KWENZY | UTAMA — RENTAL ADMIN*\n\n*Waktu mulai:* ${new Date(active.started_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\n*Waktu berakhir:* ${new Date(active.ends_at).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'})}\n*Nomor buyer:* ${displayPhone(active.wa_id)}\n*Kode akun:* ${active.account_code}\n*Kode rental:* ${active.rental_code}`);
   audit('system', 'rental.paid', `${codeValue} reference=${reference}`);
   return active;
 }
