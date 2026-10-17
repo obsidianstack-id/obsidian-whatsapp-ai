@@ -1,4 +1,4 @@
-# Obsidian Stack — WhatsApp AI Commerce
+# Kwenzy | Utama — WhatsApp AI Commerce
 
 Single-business WhatsApp AI customer service with admin dashboard, product/inventory management, rental accounts, orders, OpenRouter configuration, static QRIS, generic provider support, and a Midtrans Snap integration for Sandbox/Production.
 
