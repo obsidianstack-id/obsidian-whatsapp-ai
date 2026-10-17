@@ -1,6 +1,6 @@
 {
   "name": "obsidian-whatsapp-ai",
-  "version": "1.10.8",
+  "version": "1.10.9",
   "private": true,
   "description": "Kwenzy | Utama WhatsApp AI with admin-managed top-up provider APIs and catalog import",
   "main": "src/index.js",
