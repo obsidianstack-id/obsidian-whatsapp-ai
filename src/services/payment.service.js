@@ -42,7 +42,7 @@ async function midtransFetch(url, serverKey, options = {}) {
   return data;
 }
 
-function createOrder({ waId, customerName = '', items, paymentMethod = 'static' }) {
+function createOrder({ waId, customerName = '', items, paymentMethod = 'static', playerId = '', serverId = '', gameNickname = '' }) {
   if (!Array.isArray(items) || items.length === 0) throw new Error('Pesanan tidak memiliki item.');
   const normalized = items.map((item) => {
     const product = db.prepare('SELECT * FROM products WHERE id = ? AND active = 1').get(Number(item.productId));
@@ -54,10 +54,17 @@ function createOrder({ waId, customerName = '', items, paymentMethod = 'static' 
   });
   const subtotal = normalized.reduce((total, item) => total + item.lineTotal, 0);
   const orderCode = makeOrderCode();
+  let paymentCode = '';
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const candidate = String(crypto.randomInt(0, 100)).padStart(2, '0');
+    const collision = db.prepare("SELECT id FROM orders WHERE payment_code=? AND payment_status='pending' AND datetime(expires_at) > datetime('now')").get(candidate);
+    if (!collision) { paymentCode = candidate; break; }
+  }
+  if (!paymentCode) throw new Error('Kode pembayaran sedang penuh. Coba beberapa saat lagi.');
   const expiryMinutes = Math.max(5, Number(getSettings().payment_expiry_minutes) || 15);
   const expiresAt = new Date(Date.now() + expiryMinutes * 60000).toISOString();
-  db.prepare(`INSERT INTO orders (order_code, wa_id, customer_name, items_json, subtotal, total, payment_method, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(orderCode, waId, customerName, JSON.stringify(normalized), subtotal, subtotal, paymentMethod, expiresAt);
+  db.prepare(`INSERT INTO orders (order_code, payment_code, wa_id, customer_name, items_json, subtotal, total, payment_method, expires_at, player_id, server_id, game_nickname)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(orderCode, paymentCode, waId, customerName, JSON.stringify(normalized), subtotal, subtotal, paymentMethod, expiresAt, playerId, serverId, gameNickname);
   audit(waId, 'order.created', `${orderCode} total=${subtotal}`);
   return db.prepare('SELECT * FROM orders WHERE order_code = ?').get(orderCode);
 }
