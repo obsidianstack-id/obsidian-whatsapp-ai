@@ -3,7 +3,7 @@ const path = require('path');
 const pino = require('pino');
 const QRCode = require('qrcode');
 const {
-  default: makeWASocket, x
+  default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestWaWebVersion,
