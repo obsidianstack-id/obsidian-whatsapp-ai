@@ -17,6 +17,29 @@ db.exec(`
     value TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS topup_providers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    provider_type TEXT NOT NULL DEFAULT 'custom',
+    base_url TEXT DEFAULT '',
+    catalog_url TEXT DEFAULT '',
+    order_url TEXT DEFAULT '',
+    status_url TEXT DEFAULT '',
+    api_key TEXT DEFAULT '',
+    secret_key TEXT DEFAULT '',
+    auth_header TEXT DEFAULT 'Authorization',
+    auth_prefix TEXT DEFAULT 'Bearer ',
+    catalog_method TEXT NOT NULL DEFAULT 'GET',
+    catalog_response_path TEXT DEFAULT '',
+    sku_path TEXT DEFAULT 'code',
+    name_path TEXT DEFAULT 'name',
+    price_path TEXT DEFAULT 'price',
+    category_path TEXT DEFAULT 'category',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sku TEXT UNIQUE,
