@@ -161,3 +161,11 @@ Alur penting:
 - Migrasi memperbaiki tarif legacy yang tersimpan di bawah 60 menit akibat bug input jam.
 - Akun yang dikonfigurasi sebagai rental per jam otomatis tampil sebagai paket malam pada jam malam Jakarta yang diatur panel admin, dan kembali tampil sebagai per jam di luar jadwal. Akun yang secara eksplisit disetel admin sebagai paket malam tetap paket malam.
 - Pesan menu dan panduan rental diperbarui, termasuk alias `RENTAL`, `LIHAT`, `CARA BAYAR`, dan `CS`; perintah lama tetap dipertahankan.
+
+## Katalog produk digital / top up game (v1.10.6)
+- Di **Produk & Stok**, isi `Kode produk` sebagai SKU yang dipakai pembeli (contoh `FF70`, `FFMB1`, `ML86`). Isi juga `Nama game`, `Kode game/provider`, `Kode produk provider`, dan centang `Game memerlukan ID Server` untuk game yang membutuhkan server.
+- Pembeli mengetik `LIHAT`, lalu order dengan `FF70 8273838278` atau `ML86 12345678 1234` jika server dibutuhkan. Format lama `PESAN nomor jumlah` tetap tersedia untuk produk non-game.
+- Sistem mencoba lookup nickname jika URL lookup dikonfigurasi. Template URL mendukung `{game_code}`, `{player_id}`, `{server_id}` dan API key dikirim sebagai Bearer token. Respons yang dikenali: `nickname`, `username`, `name`, atau `data.nickname` / `data.username`.
+- Perintah bayar menjadi `BAYAR 42` (kode unik 2 digit). Kode dipilih dari kode yang belum dipakai oleh pesanan pending yang belum kedaluwarsa. Kode order lengkap lama tetap diterima.
+- Pada **Pembayaran → Produk Digital / Top Up Game**, pilih `Manual` atau `Otomatis — API provider`, konfigurasi endpoint order, API key, endpoint status (disimpan untuk konfigurasi), serta margin keuntungan (%). Dalam mode manual, admin menerima notifikasi pesanan dan notifikasi setelah pembayaran diverifikasi. Dalam mode API, setelah pembayaran terverifikasi, aplikasi mengirim POST JSON ke endpoint provider dengan `order_id`, `product_code`, `items`, `player_id`, `server_id`, `customer_phone`, dan `amount`, lalu mengirim ringkasan hasil provider ke buyer.
+- API provider berbeda-beda. Endpoint otomatis ini memakai kontrak JSON generik; sesuaikan payload/response jika provider mengharuskan parameter atau signature khusus. Jangan mengaktifkan mode API sebelum melakukan uji dengan dokumentasi provider.
