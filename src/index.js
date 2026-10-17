@@ -255,6 +255,37 @@ app.post('/api/whatsapp/start', requireAuth, (req, res) => {
 });
 app.get('/api/whatsapp/status', requireAuth, (req, res) => res.json(getWhatsAppStatus()));
 
+// Top-up provider connections are managed in the database so they can be added/edited from Admin Panel without code changes.
+app.get('/api/topup/providers', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT id,name,provider_type,base_url,catalog_url,order_url,status_url,auth_header,auth_prefix,catalog_method,catalog_response_path,sku_path,name_path,price_path,category_path,active,created_at,updated_at,CASE WHEN api_key<>\'\' THEN 1 ELSE 0 END AS has_api_key,CASE WHEN secret_key<>\'\' THEN 1 ELSE 0 END AS has_secret_key FROM topup_providers ORDER BY id DESC').all();
+  res.json({ providers: rows });
+});
+app.post('/api/topup/providers', requireAuth, (req, res) => {
+  const b=req.body||{}; const name=String(b.name||'').trim();
+  if(!name) return res.status(400).json({error:'Nama provider wajib diisi.'});
+  const result=db.prepare(`INSERT INTO topup_providers (name,provider_type,base_url,catalog_url,order_url,status_url,api_key,secret_key,auth_header,auth_prefix,catalog_method,catalog_response_path,sku_path,name_path,price_path,category_path,active) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(name,String(b.provider_type||'custom'),String(b.base_url||''),String(b.catalog_url||''),String(b.order_url||''),String(b.status_url||''),String(b.api_key||''),String(b.secret_key||''),String(b.auth_header||'Authorization'),String(b.auth_prefix??'Bearer '),String(b.catalog_method||'GET').toUpperCase(),String(b.catalog_response_path||''),String(b.sku_path||'code'),String(b.name_path||'name'),String(b.price_path||'price'),String(b.category_path||'category'),b.active===false?0:1);
+  audit('admin','topup.provider.created',name); res.json({ok:true,id:result.lastInsertRowid});
+});
+app.put('/api/topup/providers/:id', requireAuth, (req,res)=>{
+  const id=validateId(req.params.id); if(!id)return res.status(400).json({error:'ID provider tidak valid.'});
+  const b=req.body||{}; const old=db.prepare('SELECT * FROM topup_providers WHERE id=?').get(id); if(!old)return res.status(404).json({error:'Provider tidak ditemukan.'});
+  const name=String(b.name||'').trim(); if(!name)return res.status(400).json({error:'Nama provider wajib diisi.'});
+  db.prepare(`UPDATE topup_providers SET name=?,provider_type=?,base_url=?,catalog_url=?,order_url=?,status_url=?,api_key=?,secret_key=?,auth_header=?,auth_prefix=?,catalog_method=?,catalog_response_path=?,sku_path=?,name_path=?,price_path=?,category_path=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(name,String(b.provider_type||old.provider_type),String(b.base_url||''),String(b.catalog_url||''),String(b.order_url||''),String(b.status_url||''),String(b.api_key||old.api_key),String(b.secret_key||old.secret_key),String(b.auth_header||'Authorization'),String(b.auth_prefix??'Bearer '),String(b.catalog_method||'GET').toUpperCase(),String(b.catalog_response_path||''),String(b.sku_path||'code'),String(b.name_path||'name'),String(b.price_path||'price'),String(b.category_path||'category'),b.active===false?0:1,id);
+  audit('admin','topup.provider.updated',name);res.json({ok:true});
+});
+app.delete('/api/topup/providers/:id',requireAuth,(req,res)=>{const id=validateId(req.params.id);if(!id)return res.status(400).json({error:'ID provider tidak valid.'});const r=db.prepare('DELETE FROM topup_providers WHERE id=?').run(id);if(!r.changes)return res.status(404).json({error:'Provider tidak ditemukan.'});audit('admin','topup.provider.deleted',id);res.json({ok:true});});
+function readPath(obj,pathText){if(!pathText)return obj;return String(pathText).split('.').reduce((v,k)=>v==null?undefined:v[k],obj)}
+app.post('/api/topup/providers/:id/test',requireAuth,async(req,res)=>{
+  const id=validateId(req.params.id),p=db.prepare('SELECT * FROM topup_providers WHERE id=?').get(id);if(!p)return res.status(404).json({error:'Provider tidak ditemukan.'});if(!p.catalog_url)return res.status(400).json({error:'Isi URL katalog terlebih dahulu.'});
+  try{const headers={Accept:'application/json'};if(p.api_key)headers[p.auth_header||'Authorization']=`${p.auth_prefix||''}${p.api_key}`;if(p.secret_key)headers['X-Secret-Key']=p.secret_key;const response=await fetch(p.catalog_url,{method:p.catalog_method||'GET',headers,signal:AbortSignal.timeout(15000)});const text=await response.text();let data;try{data=JSON.parse(text)}catch{throw new Error(`Respons bukan JSON (HTTP ${response.status}).`)}if(!response.ok)throw new Error(`HTTP ${response.status}: ${JSON.stringify(data).slice(0,300)}`);const rows=readPath(data,p.catalog_response_path);const list=Array.isArray(rows)?rows:(Array.isArray(data.data)?data.data:(Array.isArray(data.results)?data.results:null));if(!list)throw new Error('Koneksi berhasil, tetapi daftar produk tidak ditemukan. Atur path respons katalog.');res.json({ok:true,message:`Koneksi berhasil. ${list.length} item ditemukan.`,count:list.length,preview:list.slice(0,3)});}catch(e){res.status(400).json({error:e.message});}
+});
+app.post('/api/topup/providers/:id/import',requireAuth,async(req,res)=>{
+ const id=validateId(req.params.id),p=db.prepare('SELECT * FROM topup_providers WHERE id=?').get(id);if(!p)return res.status(404).json({error:'Provider tidak ditemukan.'});if(!p.catalog_url)return res.status(400).json({error:'URL katalog belum diatur.'});
+ try{const headers={Accept:'application/json'};if(p.api_key)headers[p.auth_header||'Authorization']=`${p.auth_prefix||''}${p.api_key}`;if(p.secret_key)headers['X-Secret-Key']=p.secret_key;const response=await fetch(p.catalog_url,{method:p.catalog_method||'GET',headers,signal:AbortSignal.timeout(20000)});const raw=await response.text();let data;try{data=JSON.parse(raw)}catch{throw new Error('Respons provider bukan JSON.');}if(!response.ok)throw new Error(`Provider merespons HTTP ${response.status}.`);let list=readPath(data,p.catalog_response_path);if(!Array.isArray(list))list=Array.isArray(data.data)?data.data:Array.isArray(data.results)?data.results:null;if(!Array.isArray(list))throw new Error('Daftar produk tidak ditemukan; sesuaikan Path respons katalog.');let imported=0,skipped=0;
+ const get=(o,path)=>readPath(o,path);const upsert=db.transaction((items)=>{for(const item of items){const sku=String(get(item,p.sku_path)||'').trim(),name=String(get(item,p.name_path)||'').trim(),price=Math.round(Number(get(item,p.price_path)));if(!sku||!name||!Number.isFinite(price)||price<0){skipped++;continue;}const category=String(get(item,p.category_path)||p.name);db.prepare(`INSERT INTO products (sku,game_code,game_name,provider_product_code,name,category,description,price,stock,unlimited_stock,active) VALUES (?,?,?,?,?,?,?,?,NULL,1,1) ON CONFLICT(sku) DO UPDATE SET provider_product_code=excluded.provider_product_code,name=excluded.name,category=excluded.category,price=excluded.price,updated_at=CURRENT_TIMESTAMP`).run(sku,String(item.game_code||''),String(item.game_name||''),sku,name,category,String(item.description||''),price);imported++;}});upsert(list);audit('admin','topup.provider.catalog_import',`${p.name}: ${imported}`);res.json({ok:true,imported,skipped,message:`Impor selesai: ${imported} produk, ${skipped} dilewati.`});
+ }catch(e){res.status(400).json({error:e.message});}
+});
+
 app.post('/api/products', requireAuth, (req, res) => {
   const product = req.body || {};
   const name = String(product.name || '').trim();
