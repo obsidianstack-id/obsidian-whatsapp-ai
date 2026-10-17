@@ -1,8 +1,8 @@
 {
   "name": "obsidian-whatsapp-ai",
-  "version": "1.10.6",
+  "version": "1.10.7",
   "private": true,
-  "description": "Kwenzy | Utama WhatsApp AI with game top-up product codes, player ID capture, manual/API fulfillment, rental modes, Midtrans and admin panel",
+  "description": "Kwenzy | Utama WhatsApp AI with admin-managed top-up provider APIs and catalog import",
   "main": "src/index.js",
   "engines": {
     "node": ">=20"
