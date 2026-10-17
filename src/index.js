@@ -11,6 +11,7 @@ const {
   getWhatsAppStatus,
   sendManual,
   setConversationMode,
+  sendText,
 } = require('./services/whatsapp.service');
 const { verifyWebhook, markOrderPaid, isMidtrans, midtransServerKey, verifyMidtransSignature, getMidtransTransactionStatus, createMidtransPayment } = require('./services/payment.service');
 const rentalService = require('./services/rental.service');
@@ -93,6 +94,8 @@ function safeSettings(settings) {
     openrouter_api_key: settings.openrouter_api_key ? '•••••••• (tersimpan)' : '',
     payment_api_key: settings.payment_api_key ? '•••••••• (tersimpan)' : '',
     payment_webhook_secret: settings.payment_webhook_secret ? '•••••••• (tersimpan)' : '',
+    product_provider_api_key: settings.product_provider_api_key ? '•••••••• (tersimpan)' : '',
+    game_nickname_api_key: settings.game_nickname_api_key ? '•••••••• (tersimpan)' : '',
   };
 }
 
@@ -179,9 +182,10 @@ const ALLOWED_SETTINGS = new Set([
   'static_qris_instructions', 'payment_provider_name', 'payment_create_url', 'payment_status_url',
   'payment_api_key', 'payment_merchant_id', 'payment_mode', 'payment_dynamic_enabled',
   'payment_webhook_secret', 'payment_expiry_minutes', 'currency', 'human_handover_message',
+  'product_provider_mode', 'product_provider_order_url', 'product_provider_status_url', 'product_provider_api_key', 'product_provider_name', 'product_profit_percent', 'game_nickname_lookup_url', 'game_nickname_api_key',
   'auto_reply_enabled', 'sticker_spam_enabled', 'rental_verification_message', 'rental_hourly_payment_message', 'rental_payment_hold_minutes', 'rental_issue_report_minutes', 'rental_night_start', 'rental_night_end', 'rental_intro_message', 'rental_booking_enabled', 'rental_booking_dp', 'rental_night_price',
 ]);
-const SECRET_SETTINGS = new Set(['openrouter_api_key', 'payment_api_key', 'payment_webhook_secret']);
+const SECRET_SETTINGS = new Set(['openrouter_api_key', 'payment_api_key', 'payment_webhook_secret', 'product_provider_api_key', 'game_nickname_api_key']);
 
 app.put('/api/settings', requireAuth, (req, res) => {
   const values = {};
@@ -265,10 +269,10 @@ app.post('/api/products', requireAuth, (req, res) => {
   try {
     const result = db.prepare(
       `INSERT INTO products
-       (sku, name, category, description, price, promo_price, stock, unlimited_stock, image_url, active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (sku, game_code, game_name, id_label, server_required, provider_product_code, name, category, description, price, promo_price, stock, unlimited_stock, image_url, active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
-      product.sku || null, name, product.category || '', product.description || '', price,
+      product.sku || null, product.game_code || '', product.game_name || '', product.id_label || 'ID Game', product.server_required ? 1 : 0, product.provider_product_code || product.sku || '', name, product.category || '', product.description || '', price,
       promoPrice, stock, product.unlimited_stock ? 1 : 0, product.image_url || '',
       product.active === false ? 0 : 1,
     );
@@ -288,11 +292,11 @@ app.put('/api/products/:id', requireAuth, (req, res) => {
 
   try {
     const result = db.prepare(
-      `UPDATE products SET sku = ?, name = ?, category = ?, description = ?, price = ?,
+      `UPDATE products SET sku = ?, game_code = ?, game_name = ?, id_label = ?, server_required = ?, provider_product_code = ?, name = ?, category = ?, description = ?, price = ?,
        promo_price = ?, stock = ?, unlimited_stock = ?, image_url = ?, active = ?,
        updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     ).run(
-      product.sku || null, name, product.category || '', product.description || '',
+      product.sku || null, product.game_code || '', product.game_name || '', product.id_label || 'ID Game', product.server_required ? 1 : 0, product.provider_product_code || product.sku || '', name, product.category || '', product.description || '',
       Math.max(0, Math.round(Number(product.price) || 0)),
       product.promo_price == null || product.promo_price === '' ? null : Math.max(0, Math.round(Number(product.promo_price) || 0)),
       product.unlimited_stock ? null : Math.max(0, Math.round(Number(product.stock) || 0)),
@@ -378,6 +382,34 @@ app.post('/api/rentals/:id/resolve', requireAuth, (req, res) => {
   catch (error) { return res.status(400).json({ error: error.message }); }
 });
 
+async function fulfillDigitalOrder(orderCode) {
+  const order = db.prepare('SELECT * FROM orders WHERE order_code=?').get(orderCode);
+  if (!order) return;
+  const settings = getSettings();
+  const items = JSON.parse(order.items_json || '[]');
+  if (String(settings.product_provider_mode || 'manual') === 'api' && settings.product_provider_order_url) {
+    if (!settings.product_provider_api_key) throw new Error('API key provider produk belum diatur.');
+    const response = await fetch(settings.product_provider_order_url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${settings.product_provider_api_key}` },
+      body: JSON.stringify({ order_id: order.order_code, product_code: items[0]?.sku || '', items, player_id: order.player_id || '', server_id: order.server_id || '', customer_phone: order.wa_id, amount: order.total }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.success === false || data.status === 'failed') {
+      db.prepare("UPDATE orders SET provider_status='failed', updated_at=CURRENT_TIMESTAMP WHERE order_code=?").run(orderCode);
+      throw new Error(data.message || `Provider produk merespons HTTP ${response.status}`);
+    }
+    const reference = String(data.reference || data.trxid || data.transaction_id || data.data?.reference || '').slice(0,200);
+    db.prepare("UPDATE orders SET provider_reference=?, provider_status=?, order_status='processing', updated_at=CURRENT_TIMESTAMP WHERE order_code=?").run(reference, String(data.status || 'submitted'), orderCode);
+    await sendText(order.wa_id, `✅ *Pembayaran terverifikasi*\nPesanan: *${order.order_code}*\nGame ID: *${order.player_id || '-'}*\nNickname: *${order.game_nickname || 'Tidak tersedia'}*\nStatus top up: *${data.status || 'Diproses provider'}*\nReferensi: *${reference || '-'}*\nTotal: *Rp${Number(order.total).toLocaleString('id-ID')}*\nSimpan pesan ini sebagai struk. Jika provider belum memberi status sukses, pesanan tetap diproses.`);
+  } else {
+    db.prepare("UPDATE orders SET order_status='processing', provider_status='manual', updated_at=CURRENT_TIMESTAMP WHERE order_code=?").run(orderCode);
+    const admin = String(settings.admin_whatsapp || '').replace(/\D/g, '');
+    if (admin) await sendText(`${admin}@s.whatsapp.net`, `💰 *PEMBAYARAN PRODUK TERVERIFIKASI*\nOrder: *${order.order_code}*\nKode bayar: *${order.payment_code || '-'}*\nBuyer: ${order.wa_id.replace('@s.whatsapp.net','')}\nGame ID: *${order.player_id || '-'}*\nServer: *${order.server_id || '-'}*\nNickname: *${order.game_nickname || '-'}*\nItem: ${items.map(x => `${x.name} x${x.quantity}`).join(', ')}\nTotal: *Rp${Number(order.total).toLocaleString('id-ID')}*\nSegera proses top up dan tandai status pesanan dari panel.`);
+    await sendText(order.wa_id, `✅ *Pembayaran terverifikasi*\nPesanan: *${order.order_code}*\nGame ID: *${order.player_id || '-'}*\nNickname: *${order.game_nickname || 'Sedang diperiksa admin'}*\nTotal: *Rp${Number(order.total).toLocaleString('id-ID')}*\nPesanan diteruskan ke admin untuk diproses. Simpan pesan ini sebagai bukti pesanan.`);
+  }
+}
+
 app.post('/api/orders/:id/paid', requireAuth, (req, res) => {
   const id = validateId(req.params.id);
   if (!id) return res.status(400).json({ error: 'ID pesanan tidak valid.' });
@@ -386,6 +418,7 @@ app.post('/api/orders/:id/paid', requireAuth, (req, res) => {
 
   try {
     markOrderPaid(order.order_code, 'admin-verified');
+    fulfillDigitalOrder(order.order_code).catch(error => console.error('Digital product fulfillment failed:', error.message));
     audit('admin', 'payment.manual_verified', order.order_code);
     return res.json({ ok: true });
   } catch (error) {
@@ -487,10 +520,8 @@ app.post('/api/webhooks/payment', async (req, res) => {
       if (orderCode.startsWith('RNT-')) rentalService.markRentalPaid(orderCode, reference || orderCode);
       else if (orderCode.startsWith('NGT-')) rentalService.markNightPaid(orderCode, reference || orderCode);
       else {
-        const order = markOrderPaid(orderCode, reference);
-        const { sendText } = require('./services/whatsapp.service');
-        sendText(order.wa_id, `✅ Pembayaran untuk pesanan *${orderCode}* telah terverifikasi. Terima kasih!`)
-          .catch((error) => console.error('Payment confirmation message failed:', error.message));
+        markOrderPaid(orderCode, reference);
+        fulfillDigitalOrder(orderCode).catch(error => console.error('Digital product fulfillment failed:', error.message));
       }
       return res.json({ ok: true });
     } catch (error) {
