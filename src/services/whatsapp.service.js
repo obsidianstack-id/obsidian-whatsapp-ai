@@ -77,6 +77,18 @@ function formatPrice(amount) {
   return `Rp${Number(amount || 0).toLocaleString('id-ID')}`;
 }
 
+function formatRentalTemplate(template, values) {
+  return String(template || '').replace(/\{(account|duration|total|code)\}/g, (_, key) => String(values[key] ?? ''));
+}
+
+function rentalErrorText(error, settings = getSettings()) {
+  const message = String(error?.message || error || 'Terjadi kesalahan.');
+  if (/verifikasi|sebelum order, kirim/i.test(message)) {
+    return settings.rental_verification_message || '⚠️ _Verifikasi Diperlukan_\nSebelum bisa sewa, wajib kirim ke bot:\n1. Share Lokasi WhatsApp (Lokasi saat ini bukan live location)\n2. Video wajah sambil ucapkan “Rental dulu, Bos”\nSetelah terkirim, ketik ulang perintah _SEWA_.';
+  }
+  return `Rental belum bisa dibuat: ${message}`;
+}
+
 async function sendProductCatalog(waId, settings) {
   const products = db.prepare(
     `SELECT id, name, description, price, promo_price, stock, unlimited_stock
@@ -320,8 +332,8 @@ async function handleMessage(message) {
     try {
       const rental = rentalService.createRental({ accountCode: account.account_code, waId, customerName: sender, durationMinutes: hours * 60 });
       if (rental.queued) return sendText(waId, `🕒 *Masuk antrean*\nAkun: *${rental.account_code}*\nDurasi: ${hours} jam. Bot akan memberi tahu saat akun tersedia.`);
-      return sendText(waId, `🧾 *PESANAN RENTAL PER JAM*\nAkun: *${rental.account_code}*\nDurasi: *${hours} jam*\nTotal: *${formatPrice(rental.price)}*\nKode bayar: *${rental.unique_code}*\n\nBayar terpisah dengan *BAYARBOS ${rental.account_code} ${rental.unique_code}*. Akun hanya dikirim setelah pembayaran terverifikasi.`);
-    } catch (error) { return sendText(waId, `Rental belum bisa dibuat: ${error.message}`); }
+      return sendText(waId, formatRentalTemplate(settings.rental_hourly_payment_message, { account: rental.account_code, duration: `${hours} jam`, total: formatPrice(rental.price), code: rental.unique_code }) || `🧾 *PESANAN RENTAL PER JAM*\nAkun: *${rental.account_code}*\nDurasi: *${hours} jam*\nTotal: *${formatPrice(rental.price)}*\nKode bayar: *${rental.unique_code}*\n\n*Langkah berikutnya:* ketik *BAYARBOS ${rental.account_code} ${rental.unique_code}* untuk melanjutkan transaksi dan membuat tagihan pembayaran. Akun hanya dikirim setelah pembayaran terverifikasi.`);
+    } catch (error) { return sendText(waId, rentalErrorText(error, settings)); }
   }
   if (normalized.startsWith('sewa ')) {
     const parts = text.trim().split(/\s+/);
@@ -334,7 +346,7 @@ async function handleMessage(message) {
       if (rental.queued) return sendText(waId, `🕒 *Kamu masuk antrean rental*\nKode antrean: *${rental.rental_code}*\nAkun: *${rental.account_code}*\nPosisi antrean: ${rental.queue_position || 'berikutnya tersedia'}\nKamu belum perlu membayar sekarang. Bot akan memberi tahu saat akun tersedia dan timer pembayaran dimulai.`);
       const staticReady = Boolean(settings.static_qris_image);
       return sendText(waId, `🧾 *Reservasi rental dibuat*\nKode: *${rental.rental_code}*\nKode unik: *${rental.unique_code}*\nAkun: *${rental.account_code}* (${rental.game_name})\nDurasi: ${rental.duration_minutes % 60 === 0 ? `${rental.duration_minutes/60} jam` : `${Math.floor(rental.duration_minutes/60)} jam ${rental.duration_minutes%60} menit`}\nTotal: ${formatPrice(rental.price)}\n\nSelesaikan pembayaran dalam ${Math.max(1, Number(settings.rental_payment_hold_minutes)||20)} menit. Jika lewat, reservasi dibatalkan otomatis dan giliran diberikan kepada antrean berikutnya.\n${settings.payment_dynamic_enabled === '1' ? `Ketik *BAYARBOS ${rental.account_code} ${rental.unique_code}* untuk meminta tagihan otomatis.\nFormat lama tetap bisa: BAYAR RENTAL ${rental.rental_code} DINAMIS` : (staticReady ? `Ketik *BAYARBOS ${rental.account_code} ${rental.unique_code}* atau BAYAR RENTAL ${rental.rental_code} STATIS.` : 'Pembayaran belum diaktifkan admin. Ketik CS untuk bantuan.')}`);
-    } catch (error) { return sendText(waId, `Rental belum bisa dibuat: ${error.message}`); }
+    } catch (error) { return sendText(waId, rentalErrorText(error, settings)); }
   }
   if (normalized.startsWith('bayarbos ')) {
     const parts = text.trim().split(/\s+/);
