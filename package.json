@@ -1,8 +1,8 @@
 {
   "name": "obsidian-whatsapp-ai",
-  "version": "1.10.0",
+  "version": "1.10.2",
   "private": true,
-  "description": "Obsidian Stack WhatsApp AI with hourly and night rental, split DP settlement, Midtrans and admin panel",
+  "description": "Obsidian Stack WhatsApp AI with hour-based pricing and automatic night-mode rental, split DP settlement, Midtrans and admin panel",
   "main": "src/index.js",
   "engines": {
     "node": ">=20"
